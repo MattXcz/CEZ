@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Přihlásit se do ČEZ Distribuce",
+        "description": "Zadejte přihlašovací údaje k portálu ČEZ Distribuce (dip.cezdistribuce.cz).",
+        "data": {
+          "username": "Uživatelské jméno (e-mail)",
+          "password": "Heslo"
+        }
+      },
+      "select_supply_point": {
+        "title": "Vyberte odběrné místo",
+        "description": "Bylo nalezeno více odběrných míst. Vyberte to, které chcete sledovat.",
+        "data": {
+          "ean": "Odběrné místo"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Nesprávné přihlašovací údaje. Zkontrolujte e-mail a heslo.",
+      "cannot_connect": "Nepodařilo se připojit k ČEZ API. Zkuste to znovu.",
+      "no_supply_points": "Nebylo nalezeno žádné odběrné místo přiřazené k tomuto účtu."
+    },
+    "abort": {
+      "already_configured": "Toto odběrné místo (EAN) je již nakonfigurováno."
+    }
+  }
+}

@@ -1,9 +1,0 @@
-{
-  "ignore": [
-    "dev/",
-    "dev/**",
-    ".github/copilot-instructions.md",
-    ".vscode/",
-    ".vscode/**"
-  ]
-}
