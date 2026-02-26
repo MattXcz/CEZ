@@ -1,4 +1,4 @@
-"""Senzory pro ČEZ Distribuce."""
+"""Senzory pro ČEZ."""
 from __future__ import annotations
 
 import logging
@@ -20,6 +20,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     CONF_EAN,
     CONF_HDO_SIGNAL,
+    CONF_PRICE_NT,
+    CONF_PRICE_VT,
     DATA_READINGS,
     DATA_SIGNALS,
     DOMAIN,
@@ -54,6 +56,7 @@ async def async_setup_entry(
             CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT),
             CezReadingSensor(coordinator, entry, ean, "VT"),
             CezReadingSensor(coordinator, entry, ean, "NT"),
+            CezCurrentPriceSensor(coordinator, entry, ean, hdo_signal),
         ]
     )
 
@@ -62,9 +65,54 @@ def _device_info(entry: ConfigEntry, ean: str) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, ean)},
         name=entry.title,
-        manufacturer="ČEZ Distribuce",
+        manufacturer="ČEZ",
         model="Elektroměr",
     )
+
+
+class CezCurrentPriceSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Aktuální cena za kWh podle HDO stavu."""
+
+    _attr_native_unit_of_measurement = "Kč/kWh"
+    _attr_icon = "mdi:alpha-c-circle"
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+        hdo_signal: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._hdo_signal = hdo_signal
+        self._price_vt = float(entry.data.get(CONF_PRICE_VT, 0))
+        self._price_nt = float(entry.data.get(CONF_PRICE_NT, 0))
+        self._attr_unique_id = f"{ean}_current_price"
+        self._attr_name = "Aktuální cena"
+        self._attr_device_info = _device_info(entry, ean)
+
+    @property
+    def native_value(self) -> float | None:
+        intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal)
+        if intervals is None:
+            return None
+
+        hdo_state = _current_hdo_state(intervals)
+        if hdo_state == HDO_STATE_NT:
+            return self._price_nt
+        return self._price_vt
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal)
+        hdo_state = _current_hdo_state(intervals) if intervals is not None else HDO_STATE_UNKNOWN
+
+        return {
+            "stav_hdo": hdo_state,
+            "cena_vt": self._price_vt,
+            "cena_nt": self._price_nt,
+        }
 
 
 class CezHdoStateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):

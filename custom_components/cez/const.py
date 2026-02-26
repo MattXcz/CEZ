@@ -1,4 +1,4 @@
-"""Konstanty pro ČEZ Distribuce integraci."""
+"""Konstanty pro ČEZ integraci."""
 
 DOMAIN = "cez"
 
@@ -7,6 +7,8 @@ CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_EAN = "ean"
 CONF_HDO_SIGNAL = "hdo_signal"
+CONF_PRICE_VT = "price_vt"
+CONF_PRICE_NT = "price_nt"
 
 # Interval aktualizace dat (v sekundách)
 UPDATE_INTERVAL_SECONDS = 3600  # 1 hodina

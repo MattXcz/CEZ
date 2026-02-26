@@ -1,4 +1,4 @@
-"""ČEZ Distribuce integrace pro Home Assistant."""
+"""ČEZ integrace pro Home Assistant."""
 from __future__ import annotations
 
 import logging
