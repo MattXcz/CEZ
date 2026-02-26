@@ -18,6 +18,8 @@ from .const import (
     CONF_PRICE_NT,
     CONF_PRICE_VT,
     CONF_USERNAME,
+    DEFAULT_PRICE_NT,
+    DEFAULT_PRICE_VT,
     DOMAIN,
 )
 
@@ -178,7 +180,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Pokud nejsou žádné signály, přeskočíme krok
         if not self._hdo_signals:
-            return await self._async_create_entry("", 3.30, 2.60)
+            return await self._async_create_entry("", DEFAULT_PRICE_VT, DEFAULT_PRICE_NT)
 
         options = {s: s for s in self._hdo_signals}
 
@@ -186,8 +188,8 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="select_hdo_signal",
             data_schema=vol.Schema({
                 vol.Required(CONF_HDO_SIGNAL, default=self._hdo_signals[0]): vol.In(options),
-                vol.Required(CONF_PRICE_VT, default=3.30): vol.Coerce(float),
-                vol.Required(CONF_PRICE_NT, default=2.60): vol.Coerce(float),
+                vol.Required(CONF_PRICE_VT, default=DEFAULT_PRICE_VT): vol.Coerce(float),
+                vol.Required(CONF_PRICE_NT, default=DEFAULT_PRICE_NT): vol.Coerce(float),
             }),
             description_placeholders={"signal_count": str(len(self._hdo_signals))},
             errors=errors,
