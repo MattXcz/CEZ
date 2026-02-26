@@ -1,4 +1,4 @@
-# ČEZ Distribuce – Home Assistant integrace
+# ČEZ  – Home Assistant integrace
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
