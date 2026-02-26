@@ -10,7 +10,7 @@
 
 Vlastní integrace pro Home Assistant, která stahuje data z portálu [ČEZ Distribuce](https://dip.cezdistribuce.cz).
 
-[![Buy me a beer](https://img.buymeacoffee.com/button-api/?text=Odměn mě pivkem&emoji=🍺&slug=mattxcz&button_colour=FFDD00&font_colour=000000&font_family=Poppins&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/mattxcz)
+[![Buy me a beer](https://img.shields.io/badge/Buy_me_a_beer-Odměn_mě_pivkem-yellow?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/mattxcz)
 
 ## Co integrace umí
 
