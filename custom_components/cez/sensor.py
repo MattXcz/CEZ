@@ -46,6 +46,12 @@ async def async_setup_entry(
         [
             CezHdoStateSensor(coordinator, entry, ean, hdo_signal),
             CezHdoScheduleSensor(coordinator, entry, ean, hdo_signal),
+            CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT, "start"),
+            CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT, "end"),
+            CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT, "start"),
+            CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT, "end"),
+            CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT),
+            CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT),
             CezReadingSensor(coordinator, entry, ean, "VT"),
             CezReadingSensor(coordinator, entry, ean, "NT"),
         ]
@@ -60,10 +66,6 @@ def _device_info(entry: ConfigEntry, ean: str) -> DeviceInfo:
         model="Elektroměr",
     )
 
-
-# ---------------------------------------------------------------------------
-# Senzor 1 – aktuální stav HDO (VT / NT)
-# ---------------------------------------------------------------------------
 
 class CezHdoStateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
     """Aktuální stav HDO – VT nebo NT dle časového plánu spínání."""
@@ -104,10 +106,6 @@ class CezHdoStateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntit
         }
 
 
-# ---------------------------------------------------------------------------
-# Senzor 2 – časy spínání HDO dnes
-# ---------------------------------------------------------------------------
-
 class CezHdoScheduleSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
     """Přehled NT intervalů HDO pro dnešní den."""
 
@@ -143,14 +141,82 @@ class CezHdoScheduleSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEn
             "datum": date.today().strftime("%d.%m.%Y"),
             "pocet_intervalu": len(intervals),
             "intervaly": [f"{i['from']}-{i['to']}" for i in intervals],
-            # Celková délka NT v minutách
             "nt_celkem_minut": sum(_interval_minutes(i) for i in intervals),
         }
 
 
-# ---------------------------------------------------------------------------
-# Senzor 3 & 4 – poslední odečet VT / NT
-# ---------------------------------------------------------------------------
+class CezTariffBoundarySensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Čas začátku / konce aktuálního nebo nejbližšího VT/NT období."""
+
+    _attr_icon = "mdi:clock-outline"
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+        hdo_signal: str,
+        tariff: str,
+        boundary: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._hdo_signal = hdo_signal
+        self._tariff = tariff
+        self._boundary = boundary
+
+        tariff_name = "Vysoký tarif" if tariff == HDO_STATE_VT else "Nízký tarif"
+        suffix = "start" if boundary == "start" else "end"
+        boundary_name = "start" if boundary == "start" else "konec"
+
+        self._attr_unique_id = f"{ean}_{tariff.lower()}_{suffix}"
+        self._attr_name = f"{tariff_name} {boundary_name}"
+        self._attr_device_info = _device_info(entry, ean)
+
+    @property
+    def native_value(self) -> str | None:
+        intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal)
+        if intervals is None:
+            return None
+        window = _tariff_window(intervals, self._tariff)
+        if window is None:
+            return None
+        minute = window[0] if self._boundary == "start" else window[1]
+        return _minute_to_hhmm(minute)
+
+
+class CezTariffCountdownSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Minutový odpočet do konce VT/NT období."""
+
+    _attr_native_unit_of_measurement = "min"
+    _attr_icon = "mdi:timer-outline"
+    _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+        hdo_signal: str,
+        tariff: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._hdo_signal = hdo_signal
+        self._tariff = tariff
+        label = "Vysoký tarif" if tariff == HDO_STATE_VT else "Nízký tarif"
+
+        self._attr_unique_id = f"{ean}_{tariff.lower()}_countdown"
+        self._attr_name = f"Odpočet do konce {label.lower()}"
+        self._attr_device_info = _device_info(entry, ean)
+
+    @property
+    def native_value(self) -> int | None:
+        intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal)
+        if intervals is None:
+            return None
+        return _minutes_until_tariff_end(intervals, self._tariff)
+
 
 class CezReadingSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
     """Poslední naměřená hodnota elektroměru (VT nebo NT)."""
@@ -166,7 +232,7 @@ class CezReadingSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity
         coordinator: CezDistribuceCoordinator,
         entry: ConfigEntry,
         ean: str,
-        tariff: str,  # "VT" nebo "NT"
+        tariff: str,
     ) -> None:
         super().__init__(coordinator)
         self._ean = ean
@@ -208,25 +274,10 @@ class CezReadingSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity
         }
 
 
-# ---------------------------------------------------------------------------
-# Pomocné funkce – parsování reálné struktury ČEZ API
-# ---------------------------------------------------------------------------
-
 def _get_todays_intervals(
     data: dict | None, hdo_signal: str
 ) -> list[dict] | None:
-    """
-    Najde záznamy pro dnešní datum a daný signál a vrátí list intervalů.
-
-    Reálná struktura API:
-      data["signals"] = [
-        {"signal": "a3b7dp01", "datum": "26.02.2026", "casy": "00:00-00:16;   01:14-07:56; ..."},
-        ...
-      ]
-
-    Vrací list: [{"from": "00:00", "to": "00:16"}, ...]
-    Vrací None pokud data nejsou k dispozici.
-    """
+    """Najde záznamy pro dnešní datum a daný signál a vrátí list intervalů."""
     if not data:
         return None
 
@@ -238,12 +289,11 @@ def _get_todays_intervals(
     if not signal_list:
         return None
 
-    today_str = date.today().strftime("%d.%m.%Y")  # formát "26.02.2026"
+    today_str = date.today().strftime("%d.%m.%Y")
 
     for entry in signal_list:
         if entry.get("datum") != today_str:
             continue
-        # Pokud je hdo_signal zadán, filtrujeme podle něj; jinak bereme první dnešní záznam
         if hdo_signal and entry.get("signal") != hdo_signal:
             continue
         casy_raw = entry.get("casy", "")
@@ -253,10 +303,7 @@ def _get_todays_intervals(
 
 
 def _parse_casy(casy_str: str) -> list[dict]:
-    """
-    Parsuje string s intervaly jako "00:00-00:16;   01:14-07:56;   08:55-13:16;"
-    na list: [{"from": "00:00", "to": "00:16"}, {"from": "01:14", "to": "07:56"}, ...]
-    """
+    """Parsuje string s intervaly HDO do listu slovníků s klíči from/to."""
     intervals = []
     for part in casy_str.split(";"):
         part = part.strip().rstrip(";").strip()
@@ -273,18 +320,149 @@ def _parse_casy(casy_str: str) -> list[dict]:
 
 def _current_hdo_state(intervals: list[dict]) -> str:
     """Vrátí NT pokud aktuální čas leží v NT intervalu, jinak VT."""
-    now = datetime.now().strftime("%H:%M")
+    now_minute = _current_minute()
+    return _state_for_minute(intervals, now_minute)
+
+
+def _current_minute() -> int:
+    now = datetime.now()
+    return now.hour * 60 + now.minute
+
+
+def _parse_hhmm(value: str) -> int | None:
+    try:
+        hour_str, minute_str = value.split(":", 1)
+        hour = int(hour_str)
+        minute = int(minute_str)
+    except (ValueError, AttributeError):
+        return None
+
+    if hour == 24 and minute == 0:
+        return 24 * 60
+    if 0 <= hour < 24 and 0 <= minute < 60:
+        return hour * 60 + minute
+    return None
+
+
+def _normalize_nt_intervals(intervals: list[dict]) -> list[tuple[int, int]]:
+    """Normalizuje NT intervaly do minut a sloučí překryvy i návaznosti přes půlnoc."""
+    segments: list[tuple[int, int]] = []
     for interval in intervals:
-        if interval.get("from", "") <= now <= interval.get("to", ""):
-            return HDO_STATE_NT
-    return HDO_STATE_VT
+        start = _parse_hhmm(interval.get("from", ""))
+        end = _parse_hhmm(interval.get("to", ""))
+        if start is None or end is None or start == end:
+            continue
+
+        if end > start:
+            segments.append((start, end))
+        else:
+            segments.append((start, 24 * 60))
+            segments.append((0, end))
+
+    if not segments:
+        return []
+
+    segments.sort(key=lambda x: (x[0], x[1]))
+    merged: list[list[int]] = []
+    for start, end in segments:
+        if not merged:
+            merged.append([start, end])
+            continue
+
+        last = merged[-1]
+        if start <= last[1]:
+            last[1] = max(last[1], end)
+        else:
+            merged.append([start, end])
+
+    normalized = [(start, end) for start, end in merged]
+
+    if normalized and normalized[0][0] == 0 and normalized[-1][1] == 24 * 60:
+        wrapped = (normalized[-1][0], normalized[0][1] + 24 * 60)
+        middle = normalized[1:-1]
+        return middle + [wrapped]
+
+    return normalized
+
+
+def _is_minute_in_nt(intervals: list[dict], minute: int) -> bool:
+    minute %= 24 * 60
+    segments = _normalize_nt_intervals(intervals)
+    for start, end in segments:
+        if start <= minute < end:
+            return True
+        if end > 24 * 60 and start <= minute + 24 * 60 < end:
+            return True
+    return False
+
+
+def _state_for_minute(intervals: list[dict], minute: int) -> str:
+    return HDO_STATE_NT if _is_minute_in_nt(intervals, minute) else HDO_STATE_VT
+
+
+def _tariff_window(intervals: list[dict], tariff: str) -> tuple[int, int] | None:
+    """Vrátí start/end (v minutách dne) pro aktuální nebo nejbližší období tarifu."""
+    now = _current_minute()
+
+    def _is_tariff(minute: int) -> bool:
+        return _state_for_minute(intervals, minute) == tariff
+
+    if _is_tariff(now):
+        start_offset = 0
+        for back in range(1, 24 * 60 + 1):
+            if not _is_tariff(now - back):
+                break
+            start_offset = -back
+    else:
+        start_offset = None
+        for offset in range(1, 24 * 60 + 1):
+            if _is_tariff(now + offset):
+                start_offset = offset
+                break
+        if start_offset is None:
+            return None
+
+    start_absolute = now + start_offset
+    end_absolute = None
+    for offset in range(max(0, start_offset), max(0, start_offset) + 24 * 60 + 1):
+        if not _is_tariff(now + offset):
+            end_absolute = now + offset
+            break
+
+    if end_absolute is None:
+        return None
+
+    return start_absolute % (24 * 60), end_absolute % (24 * 60)
+
+
+def _minutes_until_tariff_end(intervals: list[dict], tariff: str) -> int | None:
+    """Vrátí počet minut do konce aktuálního nebo nejbližšího období tarifu."""
+    now = _current_minute()
+
+    def _is_tariff(minute: int) -> bool:
+        return _state_for_minute(intervals, minute) == tariff
+
+    started = False
+    for offset in range(0, 2 * 24 * 60 + 1):
+        if _is_tariff(now + offset):
+            started = True
+        elif started:
+            return offset
+
+    return None
+
+
+def _minute_to_hhmm(minute: int) -> str:
+    minute %= 24 * 60
+    return f"{minute // 60:02d}:{minute % 60:02d}"
 
 
 def _interval_minutes(interval: dict) -> int:
-    """Vrátí délku intervalu v minutách."""
-    try:
-        start = datetime.strptime(interval["from"], "%H:%M")
-        end = datetime.strptime(interval["to"], "%H:%M")
-        return max(0, int((end - start).total_seconds() // 60))
-    except (ValueError, KeyError):
+    """Vrátí délku intervalu v minutách, včetně přechodu přes půlnoc."""
+    start = _parse_hhmm(interval.get("from", ""))
+    end = _parse_hhmm(interval.get("to", ""))
+    if start is None or end is None or start == end:
         return 0
+    if end >= start:
+        return end - start
+    return (24 * 60 - start) + end
