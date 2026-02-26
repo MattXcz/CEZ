@@ -3,9 +3,14 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
 
-## ALPHA VERZE v tuto chvíli !
+## ALPHA VERZE v tuto chvíli ! (potřebuji více testerů)
+
+<img width="342" height="648" alt="Snímek obrazovky 2026-02-26 v 17 06 56" src="https://github.com/user-attachments/assets/0f673e07-fb5f-42da-93ae-d0957f17d468" />
+
 
 Vlastní integrace pro Home Assistant, která stahuje data z portálu [ČEZ Distribuce](https://dip.cezdistribuce.cz).
+
+<a href="https://www.buymeacoffee.com/mattxcz"><img src="https://img.buymeacoffee.com/button-api/?text=Odměn mě pivkem&emoji=🍺&slug=mattxcz&button_colour=FFDD00&font_colour=000000&font_family=Poppins&outline_colour=000000&coffee_colour=ffffff" /></a>
 
 ## Co integrace umí
 
