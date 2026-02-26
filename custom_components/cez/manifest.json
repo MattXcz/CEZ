@@ -1,6 +1,7 @@
 {
   "domain": "cez",
-  "name": "ČEZ Distribuce",
+  "name": "ČEZ",
+  "icon": "mdi:alpha-c-circle",
   "version": "0.1.0",
   "config_flow": true,
   "documentation": "https://github.com/mattxcz/cez",

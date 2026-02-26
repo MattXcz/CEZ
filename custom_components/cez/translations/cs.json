@@ -2,7 +2,7 @@
   "config": {
     "step": {
       "user": {
-        "title": "Přihlásit se do ČEZ Distribuce",
+        "title": "Přihlásit se do ČEZ",
         "description": "Zadejte přihlašovací údaje k portálu ČEZ Distribuce (dip.cezdistribuce.cz).",
         "data": {
           "username": "Uživatelské jméno (e-mail)",
@@ -20,7 +20,9 @@
         "title": "Vyberte HDO signál",
         "description": "Bylo nalezeno {signal_count} HDO signálů. Vyberte ten, který odpovídá vašemu tarifu (najdete ho ve smlouvě nebo na faktuře).",
         "data": {
-          "hdo_signal": "Kód HDO signálu"
+          "hdo_signal": "Kód HDO signálu",
+          "price_vt": "Cena VT (Kč/kWh)",
+          "price_nt": "Cena NT (Kč/kWh)"
         }
       }
     },

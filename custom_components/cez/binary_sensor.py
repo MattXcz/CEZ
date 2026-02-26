@@ -1,4 +1,4 @@
-"""Binary senzory pro ČEZ Distribuce – poruchy a odstávky."""
+"""Binary senzory pro ČEZ – poruchy a odstávky."""
 from __future__ import annotations
 
 import logging
@@ -50,7 +50,7 @@ class CezOutageSensor(CoordinatorEntity[CezDistribuceCoordinator], BinarySensorE
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, ean)},
             name=entry.title,
-            manufacturer="ČEZ Distribuce",
+            manufacturer="ČEZ",
             model="Elektroměr",
         )
 

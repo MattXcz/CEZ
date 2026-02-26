@@ -20,6 +20,7 @@ Vlastní integrace pro Home Assistant, která stahuje data z portálu [ČEZ Dist
 | `sensor.spinani_hdo_dnes` | Senzor | Počet NT intervalů dnes + detailní rozpis v atributech |
 | `sensor.spotreba_vt` | Senzor (kWh) | Poslední naměřená hodnota elektroměru – vysoký tarif |
 | `sensor.spotreba_nt` | Senzor (kWh) | Poslední naměřená hodnota elektroměru – nízký tarif |
+| `sensor.aktualni_cena` | Senzor (Kč/kWh) | Aktuální cena dle HDO stavu (VT/NT), ceny nastavíte při konfiguraci |
 | `sensor.vysoky_tarif_start` | Senzor | Začátek aktuálního (nebo nejbližšího) období VT |
 | `sensor.vysoky_tarif_konec` | Senzor | Konec aktuálního (nebo nejbližšího) období VT |
 | `sensor.nizky_tarif_start` | Senzor | Začátek aktuálního (nebo nejbližšího) období NT |
@@ -32,13 +33,13 @@ Vlastní integrace pro Home Assistant, která stahuje data z portálu [ČEZ Dist
 
 1. Otevřete **HACS → Integrace → ⋮ → Vlastní repozitáře**
 2. Přidejte URL tohoto repozitáře, kategorie: **Integrace**
-3. Vyhledejte „ČEZ Distribuce" a nainstalujte
+3. Vyhledejte „ČEZ" a nainstalujte
 4. Restartujte Home Assistant
-5. Přejděte do **Nastavení → Zařízení a služby → Přidat integraci → ČEZ Distribuce**
+5. Přejděte do **Nastavení → Zařízení a služby → Přidat integraci → ČEZ**
 
 ## Ruční instalace
 
-Zkopírujte složku `custom_components/cez_distribuce` do adresáře `config/custom_components/` ve vašem Home Assistant.
+Zkopírujte složku `custom_components/cez` do adresáře `config/custom_components/` ve vašem Home Assistant.
 
 ## Nastavení
 
@@ -47,6 +48,10 @@ Po přidání integrace zadejte:
 - **Heslo** – heslo k portálu ČEZ Distribuce
 
 Pokud máte více odběrných míst, budete vyzváni k výběru.
+
+V kroku výběru HDO signálu nastavíte i:
+- **Cena VT (Kč/kWh)**
+- **Cena NT (Kč/kWh)**
 
 ## Frekvence aktualizací
 
@@ -65,7 +70,7 @@ Zapněte debug logování přidáním do `configuration.yaml`:
 ```yaml
 logger:
   logs:
-    custom_components.cez_distribuce: debug
+    custom_components.cez: debug
 ```
 
 

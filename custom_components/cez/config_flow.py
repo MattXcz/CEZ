@@ -1,4 +1,4 @@
-"""Config flow pro ČEZ Distribuce."""
+"""Config flow pro ČEZ."""
 from __future__ import annotations
 
 import logging
@@ -11,7 +11,15 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 
 from .api import CezAuthError, CezDistribuceApiClient
-from .const import CONF_EAN, CONF_HDO_SIGNAL, CONF_PASSWORD, CONF_USERNAME, DOMAIN
+from .const import (
+    CONF_EAN,
+    CONF_HDO_SIGNAL,
+    CONF_PASSWORD,
+    CONF_PRICE_NT,
+    CONF_PRICE_VT,
+    CONF_USERNAME,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,7 +67,7 @@ async def _fetch_hdo_signals(username: str, password: str, ean: str) -> list[str
 
 
 class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Průvodce nastavením integrace ČEZ Distribuce."""
+    """Průvodce nastavením integrace ČEZ."""
 
     VERSION = 1
 
@@ -153,7 +161,11 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            return await self._async_create_entry(user_input[CONF_HDO_SIGNAL])
+            return await self._async_create_entry(
+                user_input[CONF_HDO_SIGNAL],
+                user_input[CONF_PRICE_VT],
+                user_input[CONF_PRICE_NT],
+            )
 
         # Načíst dostupné signály
         if not self._hdo_signals:
@@ -166,14 +178,16 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Pokud nejsou žádné signály, přeskočíme krok
         if not self._hdo_signals:
-            return await self._async_create_entry("")
+            return await self._async_create_entry("", 3.30, 2.60)
 
         options = {s: s for s in self._hdo_signals}
 
         return self.async_show_form(
             step_id="select_hdo_signal",
             data_schema=vol.Schema({
-                vol.Required(CONF_HDO_SIGNAL, default=self._hdo_signals[0]): vol.In(options)
+                vol.Required(CONF_HDO_SIGNAL, default=self._hdo_signals[0]): vol.In(options),
+                vol.Required(CONF_PRICE_VT, default=3.30): vol.Coerce(float),
+                vol.Required(CONF_PRICE_NT, default=2.60): vol.Coerce(float),
             }),
             description_placeholders={"signal_count": str(len(self._hdo_signals))},
             errors=errors,
@@ -193,7 +207,12 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             or f"ČEZ {self._selected_ean}"
         )
 
-    async def _async_create_entry(self, hdo_signal: str) -> FlowResult:
+    async def _async_create_entry(
+        self,
+        hdo_signal: str,
+        price_vt: float,
+        price_nt: float,
+    ) -> FlowResult:
         """Vytvoří config entry."""
         await self.async_set_unique_id(self._selected_ean)
         self._abort_if_unique_id_configured()
@@ -205,5 +224,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_EAN: self._selected_ean,
                 "uid": self._selected_uid,
                 CONF_HDO_SIGNAL: hdo_signal,
+                CONF_PRICE_VT: price_vt,
+                CONF_PRICE_NT: price_nt,
             },
         )
