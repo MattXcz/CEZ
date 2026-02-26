@@ -1,10 +1,10 @@
 {
-  "domain": "cez_distribuce",
+  "domain": "cez",
   "name": "ČEZ Distribuce",
   "version": "0.1.0",
   "config_flow": true,
-  "documentation": "https://github.com/yourusername/cez_distribuce",
-  "issue_tracker": "https://github.com/yourusername/cez_distribuce/issues",
+  "documentation": "https://github.com/yourusername/cez",
+  "issue_tracker": "https://github.com/yourusername/cez/issues",
   "dependencies": [],
   "codeowners": ["@yourusername"],
   "requirements": ["aiohttp>=3.8.0"],

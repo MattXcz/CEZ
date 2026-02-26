@@ -15,6 +15,13 @@
         "data": {
           "ean": "Odběrné místo"
         }
+      },
+      "select_hdo_signal": {
+        "title": "Vyberte HDO signál",
+        "description": "Bylo nalezeno {signal_count} HDO signálů. Vyberte ten, který odpovídá vašemu tarifu (najdete ho ve smlouvě nebo na faktuře).",
+        "data": {
+          "hdo_signal": "Kód HDO signálu"
+        }
       }
     },
     "error": {

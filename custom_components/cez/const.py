@@ -1,11 +1,12 @@
 """Konstanty pro ČEZ Distribuce integraci."""
 
-DOMAIN = "cez_distribuce"
+DOMAIN = "cez"
 
 # Konfigurační klíče
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_EAN = "ean"
+CONF_HDO_SIGNAL = "hdo_signal"
 
 # Interval aktualizace dat (v sekundách)
 UPDATE_INTERVAL_SECONDS = 3600  # 1 hodina
