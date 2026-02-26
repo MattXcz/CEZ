@@ -152,7 +152,7 @@ class CezHdoStateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntit
         intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal) or []
         return {
             "hdo_signal": self._hdo_signal,
-            "nt_intervals_dnes": [f"{i['from']}-{i['to']}" for i in intervals],
+            "nt_intervals_dnes": _format_nt_intervals(intervals),
         }
 
 
@@ -186,12 +186,14 @@ class CezHdoScheduleSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEn
     def extra_state_attributes(self) -> dict[str, Any]:
         """Detailní rozpis NT intervalů jako atributy."""
         intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal) or []
+        normalized_intervals = _normalize_nt_intervals(intervals)
+        formatted_intervals = _format_nt_intervals(intervals)
         return {
             "hdo_signal": self._hdo_signal,
             "datum": date.today().strftime("%d.%m.%Y"),
-            "pocet_intervalu": len(intervals),
-            "intervaly": [f"{i['from']}-{i['to']}" for i in intervals],
-            "nt_celkem_minut": sum(_interval_minutes(i) for i in intervals),
+            "pocet_intervalu": len(formatted_intervals),
+            "intervaly": formatted_intervals,
+            "nt_celkem_minut": sum(end - start for start, end in normalized_intervals),
         }
 
 
@@ -505,6 +507,19 @@ def _minutes_until_tariff_end(intervals: list[dict], tariff: str) -> int | None:
 def _minute_to_hhmm(minute: int) -> str:
     minute %= 24 * 60
     return f"{minute // 60:02d}:{minute % 60:02d}"
+
+
+def _format_nt_intervals(intervals: list[dict]) -> list[str]:
+    """Vrátí intervaly v normalizované podobě vhodné pro atributy senzorů."""
+    formatted: list[str] = []
+    for start, end in _normalize_nt_intervals(intervals):
+        start_str = _minute_to_hhmm(start)
+        if end == 24 * 60:
+            end_str = "24:00"
+        else:
+            end_str = _minute_to_hhmm(end)
+        formatted.append(f"{start_str}-{end_str}")
+    return formatted
 
 
 def _interval_minutes(interval: dict) -> int:
