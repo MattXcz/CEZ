@@ -24,6 +24,8 @@ from .const import (
     CONF_PRICE_VT,
     DATA_READINGS,
     DATA_SIGNALS,
+    DEFAULT_PRICE_NT,
+    DEFAULT_PRICE_VT,
     DOMAIN,
     HDO_STATE_NT,
     HDO_STATE_UNKNOWN,
@@ -86,8 +88,8 @@ class CezCurrentPriceSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorE
     ) -> None:
         super().__init__(coordinator)
         self._hdo_signal = hdo_signal
-        self._price_vt = float(entry.data.get(CONF_PRICE_VT, 0))
-        self._price_nt = float(entry.data.get(CONF_PRICE_NT, 0))
+        self._price_vt = float(entry.data.get(CONF_PRICE_VT, DEFAULT_PRICE_VT))
+        self._price_nt = float(entry.data.get(CONF_PRICE_NT, DEFAULT_PRICE_NT))
         self._attr_unique_id = f"{ean}_current_price"
         self._attr_name = "Aktuální cena"
         self._attr_device_info = _device_info(entry, ean)

@@ -9,6 +9,8 @@ CONF_EAN = "ean"
 CONF_HDO_SIGNAL = "hdo_signal"
 CONF_PRICE_VT = "price_vt"
 CONF_PRICE_NT = "price_nt"
+DEFAULT_PRICE_VT = 3.30
+DEFAULT_PRICE_NT = 2.60
 
 # Interval aktualizace dat (v sekundách)
 UPDATE_INTERVAL_SECONDS = 3600  # 1 hodina
