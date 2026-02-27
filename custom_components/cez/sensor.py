@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -12,9 +12,10 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
@@ -63,6 +64,31 @@ async def async_setup_entry(
     )
 
 
+class CezTimeAwareSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Senzor závislý na aktuálním čase; přepočítá stav každou minutu."""
+
+    _unsub_time_listener: CALLBACK_TYPE | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Po přidání do HA spustí minutový přepočet stavu."""
+        await super().async_added_to_hass()
+        self._unsub_time_listener = async_track_time_interval(
+            self.hass, self._handle_time_change, timedelta(minutes=1)
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Uklidí listener při odebrání entity."""
+        if self._unsub_time_listener is not None:
+            self._unsub_time_listener()
+            self._unsub_time_listener = None
+        await super().async_will_remove_from_hass()
+
+    @callback
+    def _handle_time_change(self, _: datetime) -> None:
+        """Zapíše nový stav na minutovém tiknutí."""
+        self.async_write_ha_state()
+
+
 def _device_info(entry: ConfigEntry, ean: str) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, ean)},
@@ -72,7 +98,7 @@ def _device_info(entry: ConfigEntry, ean: str) -> DeviceInfo:
     )
 
 
-class CezCurrentPriceSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+class CezCurrentPriceSensor(CezTimeAwareSensor):
     """Aktuální cena za kWh podle HDO stavu."""
 
     _attr_native_unit_of_measurement = "Kč/kWh"
@@ -96,19 +122,19 @@ class CezCurrentPriceSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorE
 
     @property
     def native_value(self) -> float | None:
-        intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal)
-        if intervals is None:
+        windows = _get_nt_windows_around_now(self.coordinator.data, self._hdo_signal)
+        if windows is None:
             return None
 
-        hdo_state = _current_hdo_state(intervals)
+        hdo_state = _current_hdo_state_from_windows(windows)
         if hdo_state == HDO_STATE_NT:
             return self._price_nt
         return self._price_vt
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal)
-        hdo_state = _current_hdo_state(intervals) if intervals is not None else HDO_STATE_UNKNOWN
+        windows = _get_nt_windows_around_now(self.coordinator.data, self._hdo_signal)
+        hdo_state = _current_hdo_state_from_windows(windows) if windows is not None else HDO_STATE_UNKNOWN
 
         return {
             "stav_hdo": hdo_state,
@@ -117,7 +143,7 @@ class CezCurrentPriceSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorE
         }
 
 
-class CezHdoStateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+class CezHdoStateSensor(CezTimeAwareSensor):
     """Aktuální stav HDO – VT nebo NT dle časového plánu spínání."""
 
     _attr_icon = "mdi:transmission-tower"
@@ -140,19 +166,30 @@ class CezHdoStateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntit
     @property
     def native_value(self) -> str:
         """Vrátí VT nebo NT podle toho, jestli aktuální čas leží v NT intervalu."""
-        intervals = _get_todays_intervals(
-            self.coordinator.data, self._hdo_signal
-        )
-        if intervals is None:
+        windows = _get_nt_windows_around_now(self.coordinator.data, self._hdo_signal)
+        if windows is None:
             return HDO_STATE_UNKNOWN
-        return _current_hdo_state(intervals)
+        return _current_hdo_state_from_windows(windows)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        now = datetime.now()
+        windows = _get_nt_windows_around_now(self.coordinator.data, self._hdo_signal)
         intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal) or []
+
+        current_window = _current_nt_window(windows or [], now)
+        next_window = _next_nt_window(windows or [], now)
+        language = (self.hass.config.language if self.hass else "cs").lower()
+
         return {
             "hdo_signal": self._hdo_signal,
             "nt_intervals_dnes": _format_nt_intervals(intervals),
+            "od": _format_datetime_localized(current_window[0], language) if current_window else None,
+            "do": _format_datetime_localized(current_window[1], language) if current_window else None,
+            "dalsi_sepnuti": _format_datetime_localized(next_window[0], language) if next_window else None,
+            "from": _format_datetime_localized(current_window[0], "en") if current_window else None,
+            "to": _format_datetime_localized(current_window[1], "en") if current_window else None,
+            "next_switch": _format_datetime_localized(next_window[0], "en") if next_window else None,
         }
 
 
@@ -376,6 +413,83 @@ def _current_hdo_state(intervals: list[dict]) -> str:
     return _state_for_minute(intervals, now_minute)
 
 
+def _get_nt_windows_around_now(data: dict | None, hdo_signal: str) -> list[tuple[datetime, datetime]] | None:
+    """Vrátí NT okna kolem dneška (včera, dnes, zítra) jako absolutní datetime."""
+    if not data:
+        return None
+
+    signals_data = data.get(DATA_SIGNALS)
+    if not signals_data:
+        return None
+
+    signal_list = signals_data.get("signals", [])
+    if not signal_list:
+        return None
+
+    today = date.today()
+    relevant_dates = {today - timedelta(days=1), today, today + timedelta(days=1)}
+    windows: list[tuple[datetime, datetime]] = []
+
+    for entry in signal_list:
+        if hdo_signal and entry.get("signal") != hdo_signal:
+            continue
+        datum = _parse_signal_date(entry.get("datum"))
+        if datum is None or datum not in relevant_dates:
+            continue
+
+        for interval in _parse_casy(entry.get("casy", "")):
+            start_minute = _parse_hhmm(interval.get("from", ""))
+            end_minute = _parse_hhmm(interval.get("to", ""))
+            if start_minute is None or end_minute is None or start_minute == end_minute:
+                continue
+
+            start_dt = datetime.combine(datum, datetime.min.time()) + timedelta(minutes=start_minute)
+            end_dt = datetime.combine(datum, datetime.min.time()) + timedelta(minutes=end_minute)
+            if end_minute <= start_minute:
+                end_dt += timedelta(days=1)
+
+            windows.append((start_dt, end_dt))
+
+    return sorted(windows, key=lambda item: item[0])
+
+
+def _parse_signal_date(raw: Any) -> date | None:
+    try:
+        return datetime.strptime(str(raw), "%d.%m.%Y").date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _current_hdo_state_from_windows(windows: list[tuple[datetime, datetime]]) -> str:
+    now = datetime.now()
+    return HDO_STATE_NT if _current_nt_window(windows, now) else HDO_STATE_VT
+
+
+def _current_nt_window(
+    windows: list[tuple[datetime, datetime]], now: datetime
+) -> tuple[datetime, datetime] | None:
+    for start, end in windows:
+        if start <= now < end:
+            return start, end
+    return None
+
+
+def _next_nt_window(
+    windows: list[tuple[datetime, datetime]], now: datetime
+) -> tuple[datetime, datetime] | None:
+    current = _current_nt_window(windows, now)
+    if current:
+        _, current_end = current
+        for start, end in windows:
+            if start >= current_end:
+                return start, end
+
+    for start, end in windows:
+        if start > now:
+            return start, end
+    return None
+
+
 def _current_minute() -> int:
     now = datetime.now()
     return now.hour * 60 + now.minute
@@ -531,3 +645,28 @@ def _interval_minutes(interval: dict) -> int:
     if end >= start:
         return end - start
     return (24 * 60 - start) + end
+
+
+def _format_datetime_localized(value: datetime, language: str) -> str:
+    language = language.lower()
+    if language.startswith("cs"):
+        months = {
+            1: "ledna",
+            2: "února",
+            3: "března",
+            4: "dubna",
+            5: "května",
+            6: "června",
+            7: "července",
+            8: "srpna",
+            9: "září",
+            10: "října",
+            11: "listopadu",
+            12: "prosince",
+        }
+        return (
+            f"{value.day}. {months[value.month]} {value.year} "
+            f"v {value.strftime('%H:%M:%S')}"
+        )
+
+    return f"{value.strftime('%B')} {value.day}, {value.year} at {value.strftime('%H:%M:%S')}"

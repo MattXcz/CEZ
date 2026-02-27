@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sign in to ČEZ",
+        "description": "Enter your login details for the ČEZ Distribuce portal (dip.cezdistribuce.cz).",
+        "data": {
+          "username": "Username (email)",
+          "password": "Password"
+        }
+      },
+      "select_supply_point": {
+        "title": "Select supply point",
+        "description": "Multiple supply points were found. Select the one you want to monitor.",
+        "data": {
+          "ean": "Supply point"
+        }
+      },
+      "select_hdo_signal": {
+        "title": "Select HDO signal",
+        "description": "{signal_count} HDO signals were found. Select the one that matches your tariff (you can find it in your contract or invoice).",
+        "data": {
+          "hdo_signal": "HDO signal code",
+          "price_vt": "VT price (CZK/kWh)",
+          "price_nt": "NT price (CZK/kWh)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid login details. Check your email and password.",
+      "cannot_connect": "Could not connect to ČEZ API. Please try again.",
+      "no_supply_points": "No supply point associated with this account was found."
+    },
+    "abort": {
+      "already_configured": "This supply point (EAN) is already configured."
+    }
+  }
+}
