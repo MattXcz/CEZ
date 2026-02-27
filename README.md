@@ -6,15 +6,11 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
 
-## ALPHA VERZE v tuto chvíli ! (potřebuji více testerů)
-
 <img width="342" height="648" alt="Screen" src="https://github.com/user-attachments/assets/0f673e07-fb5f-42da-93ae-d0957f17d468" />
 <img width="340" height="900" alt="Screen" src="https://github.com/user-attachments/assets/04fd0df6-dae3-49cb-930b-b1b5db8d8db0" />
 
 
-
-
-Vlastní integrace pro Home Assistant, která stahuje data z portálu [ČEZ Distribuce](https://dip.cezdistribuce.cz).
+Integrace pro Home Assistant, která stahuje data z portálu [ČEZ Distribuce](https://dip.cezdistribuce.cz).
 
 [![Buy me a beer](https://img.shields.io/badge/Buy_me_a_beer-Odměn_mě_pivkem-yellow?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/mattxcz)
 
