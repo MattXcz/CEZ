@@ -179,17 +179,12 @@ class CezHdoStateSensor(CezTimeAwareSensor):
 
         current_window = _current_nt_window(windows or [], now)
         next_window = _next_nt_window(windows or [], now)
-        language = (self.hass.config.language if self.hass else "cs").lower()
-
         return {
             "hdo_signal": self._hdo_signal,
             "nt_intervals_dnes": _format_nt_intervals(intervals),
-            "od": _format_datetime_localized(current_window[0], language) if current_window else None,
-            "do": _format_datetime_localized(current_window[1], language) if current_window else None,
-            "dalsi_sepnuti": _format_datetime_localized(next_window[0], language) if next_window else None,
-            "from": _format_datetime_localized(current_window[0], "en") if current_window else None,
-            "to": _format_datetime_localized(current_window[1], "en") if current_window else None,
-            "next_switch": _format_datetime_localized(next_window[0], "en") if next_window else None,
+            "od": current_window[0].isoformat() if current_window else None,
+            "do": current_window[1].isoformat() if current_window else None,
+            "dalsi_sepnuti": next_window[0].isoformat() if next_window else None,
         }
 
 
@@ -646,27 +641,3 @@ def _interval_minutes(interval: dict) -> int:
         return end - start
     return (24 * 60 - start) + end
 
-
-def _format_datetime_localized(value: datetime, language: str) -> str:
-    language = language.lower()
-    if language.startswith("cs"):
-        months = {
-            1: "ledna",
-            2: "února",
-            3: "března",
-            4: "dubna",
-            5: "května",
-            6: "června",
-            7: "července",
-            8: "srpna",
-            9: "září",
-            10: "října",
-            11: "listopadu",
-            12: "prosince",
-        }
-        return (
-            f"{value.day}. {months[value.month]} {value.year} "
-            f"v {value.strftime('%H:%M:%S')}"
-        )
-
-    return f"{value.strftime('%B')} {value.day}, {value.year} at {value.strftime('%H:%M:%S')}"
