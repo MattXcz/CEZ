@@ -70,6 +70,6 @@ class CezOutageSensor(CoordinatorEntity[CezDistribuceCoordinator], BinarySensorE
         outages = self.coordinator.data.get(DATA_OUTAGES) if self.coordinator.data else {}
         outage_list = outages if isinstance(outages, list) else outages.get("outages") or outages.get("shutdowns") or []
         return {
-            "outages": outage_list,
-            "count": len(outage_list),
+            "poruchy_odstavky": outage_list,
+            "pocet": len(outage_list),
         }
