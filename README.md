@@ -1,16 +1,36 @@
+
 # ČEZ  – Home Assistant integrace
+
+<img height="90" alt="logo" src="https://github.com/user-attachments/assets/cf5f5141-946a-4303-a515-2a65bd3a5efe" />
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
 
 ## ALPHA VERZE v tuto chvíli ! (potřebuji více testerů)
 
-<img width="342" height="648" alt="Snímek obrazovky 2026-02-26 v 17 06 56" src="https://github.com/user-attachments/assets/0f673e07-fb5f-42da-93ae-d0957f17d468" />
+<img width="342" height="648" alt="Screen" src="https://github.com/user-attachments/assets/0f673e07-fb5f-42da-93ae-d0957f17d468" />
+<img width="640" height="900" alt="Screen" src="https://github.com/user-attachments/assets/04fd0df6-dae3-49cb-930b-b1b5db8d8db0" />
+
+
 
 
 Vlastní integrace pro Home Assistant, která stahuje data z portálu [ČEZ Distribuce](https://dip.cezdistribuce.cz).
 
 [![Buy me a beer](https://img.shields.io/badge/Buy_me_a_beer-Odměn_mě_pivkem-yellow?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/mattxcz)
+
+## Instalace přes HACS
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?category=Integration&owner=mattxcz&repository=CEZ)
+
+1. Otevřete **HACS → Integrace → ⋮ → Vlastní repozitáře**
+2. Přidejte URL tohoto repozitáře, kategorie: **Integrace**
+3. Vyhledejte „ČEZ" a nainstalujte
+4. Restartujte Home Assistant
+5. Přejděte do **Nastavení → Zařízení a služby → Přidat integraci → ČEZ**
+
+## Ruční instalace
+
+Zkopírujte složku `custom_components/cez` do adresáře `config/custom_components/` ve vašem Home Assistant.
+
 
 ## Co integrace umí
 
@@ -28,18 +48,6 @@ Vlastní integrace pro Home Assistant, která stahuje data z portálu [ČEZ Dist
 | `sensor.odpocet_do_konce_vysokeho_tarifu` | Senzor (min) | Minuty do konce aktuálního/nejbližšího VT (ve výchozím stavu skrytý) |
 | `sensor.odpocet_do_konce_nizkeho_tarifu` | Senzor (min) | Minuty do konce aktuálního/nejbližšího NT (ve výchozím stavu skrytý) |
 | `binary_sensor.porucha_odstavka` | Binary senzor | Hlášená porucha nebo plánovaná odstávka |
-
-## Instalace přes HACS
-
-1. Otevřete **HACS → Integrace → ⋮ → Vlastní repozitáře**
-2. Přidejte URL tohoto repozitáře, kategorie: **Integrace**
-3. Vyhledejte „ČEZ" a nainstalujte
-4. Restartujte Home Assistant
-5. Přejděte do **Nastavení → Zařízení a služby → Přidat integraci → ČEZ**
-
-## Ruční instalace
-
-Zkopírujte složku `custom_components/cez` do adresáře `config/custom_components/` ve vašem Home Assistant.
 
 ## Nastavení
 
