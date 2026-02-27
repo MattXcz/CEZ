@@ -1,7 +1,12 @@
 
 # ČEZ  – Home Assistant integrace
 
+
 <img height="90" alt="logo" src="https://github.com/user-attachments/assets/cf5f5141-946a-4303-a515-2a65bd3a5efe" />
+
+[![✅ HACS Validation](https://github.com/MattXcz/CEZ/actions/workflows/hacs.yaml/badge.svg?branch=main)](https://github.com/MattXcz/CEZ/actions/workflows/hacs.yaml)
+[![🔍 Code Quality](https://github.com/MattXcz/CEZ/actions/workflows/quality.yaml/badge.svg)](https://github.com/MattXcz/CEZ/actions/workflows/quality.yaml)
+[![🏠 Home Assistant Validation](https://github.com/MattXcz/CEZ/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/MattXcz/CEZ/actions/workflows/hassfest.yaml)
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 
