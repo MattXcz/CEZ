@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pull-requests: read
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Select PyPI or TestPyPI based on tag name
+    # If the tag contains 'rc', 'dev', 'a', or 'b', use TestPyPI; otherwise, use PyPI
+    environment: ${{ (contains(github.ref_name, 'rc') || contains(github.ref_name, 'dev') || contains(github.ref_name, 'a') || contains(github.ref_name, 'b')) && 'testpypi' || 'pypi' }}
+
+
+    steps:
+      - name: Checkout (full history for versioning)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --dev
+
+      - name: Build (sdist + wheel)
+        run: uv build
+
+      - name: Publish (Trusted Publisher via OIDC)
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == *"rc"* || "${GITHUB_REF_NAME}" == *"dev"* || "${GITHUB_REF_NAME}" == *"a"* || "${GITHUB_REF_NAME}" == *"b"* ]]; then
+            uv publish --index testpypi
+          else
+            uv publish
+          fi
+
+      - name: Generate release notes (Release Drafter)
+        id: rd
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release.yml
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only create GitHub Release for:
+      # - stable tags: vX.Y.Z
+      # - rc tags: vX.Y.ZrcN (as prerelease)
+      - name: Create GitHub Release
+        if: ${{ startsWith(github.ref_name, 'v') && !contains(github.ref_name, 'dev') && !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          body: ${{ steps.rd.outputs.body }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'rc') }}
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          generate_release_notes: false
