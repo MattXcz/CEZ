@@ -174,11 +174,10 @@ class CezHdoStateSensor(CezTimeAwareSensor):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         now = datetime.now()
-        windows = _get_nt_windows_around_now(self.coordinator.data, self._hdo_signal)
         intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal) or []
 
-        current_window = _current_nt_window(windows or [], now)
-        next_window = _next_nt_window(windows or [], now)
+        current_window = _current_tariff_window_absolute(intervals, HDO_STATE_NT, now)
+        next_window = _next_tariff_window_absolute(intervals, HDO_STATE_NT, now)
         return {
             "hdo_signal": self._hdo_signal,
             "nt_intervals_dnes": _format_nt_intervals(intervals),
@@ -613,6 +612,73 @@ def _minutes_until_tariff_end(intervals: list[dict], tariff: str) -> int | None:
     return None
 
 
+def _current_tariff_window_absolute(
+    intervals: list[dict], tariff: str, now: datetime
+) -> tuple[datetime, datetime] | None:
+    """Vrátí absolutní začátek/konec aktuálního období tarifu vůči `now`."""
+    now_minute = now.hour * 60 + now.minute
+
+    if _state_for_minute(intervals, now_minute) != tariff:
+        return None
+
+    start_offset = 0
+    for back in range(1, 24 * 60 + 1):
+        if _state_for_minute(intervals, now_minute - back) != tariff:
+            break
+        start_offset = -back
+
+    end_offset = 0
+    for forward in range(1, 24 * 60 + 1):
+        if _state_for_minute(intervals, now_minute + forward) != tariff:
+            end_offset = forward
+            break
+
+    if end_offset == 0:
+        return None
+
+    start_dt = now + timedelta(minutes=start_offset)
+    end_dt = now + timedelta(minutes=end_offset)
+    return start_dt, end_dt
+
+
+def _next_tariff_window_absolute(
+    intervals: list[dict], tariff: str, now: datetime
+) -> tuple[datetime, datetime] | None:
+    """Vrátí absolutní začátek/konec nejbližšího budoucího období tarifu vůči `now`."""
+    now_minute = now.hour * 60 + now.minute
+
+    in_tariff = _state_for_minute(intervals, now_minute) == tariff
+    search_start = 1
+
+    if in_tariff:
+        for offset in range(1, 24 * 60 + 1):
+            if _state_for_minute(intervals, now_minute + offset) != tariff:
+                search_start = offset + 1
+                break
+
+    start_offset = None
+    for offset in range(search_start, 2 * 24 * 60 + 1):
+        if _state_for_minute(intervals, now_minute + offset) == tariff:
+            start_offset = offset
+            break
+
+    if start_offset is None:
+        return None
+
+    end_offset = None
+    for offset in range(start_offset + 1, start_offset + 24 * 60 + 1):
+        if _state_for_minute(intervals, now_minute + offset) != tariff:
+            end_offset = offset
+            break
+
+    if end_offset is None:
+        return None
+
+    start_dt = now + timedelta(minutes=start_offset)
+    end_dt = now + timedelta(minutes=end_offset)
+    return start_dt, end_dt
+
+
 def _minute_to_hhmm(minute: int) -> str:
     minute %= 24 * 60
     return f"{minute // 60:02d}:{minute % 60:02d}"
@@ -640,4 +706,3 @@ def _interval_minutes(interval: dict) -> int:
     if end >= start:
         return end - start
     return (24 * 60 - start) + end
-
