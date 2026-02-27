@@ -43,19 +43,48 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Stáhne všechna potřebná data z ČEZ API."""
-        try:
-            readings = await self._client.get_readings(self._uid)
-            signals = await self._client.get_signals(self._ean)
-            outages = await self._client.get_outages(self._ean)
+        previous_data = self.data or {}
+        merged_data: dict[str, Any] = dict(previous_data)
 
-            return {
-                DATA_READINGS: readings,
-                DATA_SIGNALS: signals,
-                DATA_OUTAGES: outages,
-            }
-        except CezAuthError as err:
-            raise UpdateFailed(f"Chyba autentizace ČEZ: {err}") from err
-        except CezApiError as err:
-            raise UpdateFailed(f"Chyba ČEZ API: {err}") from err
-        except Exception as err:
-            raise UpdateFailed(f"Neočekávaná chyba: {err}") from err
+        async def _load_dataset(key: str, fetcher: Any) -> None:
+            try:
+                merged_data[key] = await fetcher()
+            except CezAuthError as err:
+                if key in previous_data:
+                    _LOGGER.warning(
+                        "Nelze obnovit %s kvůli autentizaci (%s), ponechávám poslední známá data.",
+                        key,
+                        err,
+                    )
+                    return
+                raise UpdateFailed(f"Chyba autentizace ČEZ: {err}") from err
+            except CezApiError as err:
+                if key in previous_data:
+                    _LOGGER.warning(
+                        "Nelze obnovit %s (%s), ponechávám poslední známá data.",
+                        key,
+                        err,
+                    )
+                    return
+                raise UpdateFailed(f"Chyba ČEZ API: {err}") from err
+            except Exception as err:
+                if key in previous_data:
+                    _LOGGER.warning(
+                        "Neočekávaná chyba při obnově %s (%s), ponechávám poslední známá data.",
+                        key,
+                        err,
+                    )
+                    return
+                raise UpdateFailed(f"Neočekávaná chyba: {err}") from err
+
+        try:
+            await _load_dataset(DATA_READINGS, lambda: self._client.get_readings(self._uid))
+            await _load_dataset(DATA_SIGNALS, lambda: self._client.get_signals(self._ean))
+            await _load_dataset(DATA_OUTAGES, lambda: self._client.get_outages(self._ean))
+        except UpdateFailed:
+            raise
+
+        if not merged_data:
+            raise UpdateFailed("ČEZ nevrátil žádná data.")
+
+        return merged_data
