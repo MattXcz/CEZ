@@ -1,7 +1,7 @@
 {
   "domain": "cez",
   "name": "ČEZ",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "config_flow": true,
   "documentation": "https://github.com/mattxcz/cez",
   "issue_tracker": "https://github.com/mattxcz/cez/issues",
