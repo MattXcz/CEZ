@@ -1,0 +1,46 @@
+name-template: '$RESOLVED_VERSION'
+tag-template: '$RESOLVED_VERSION'
+change-template: '- $TITLE (#$NUMBER)'
+no-changes-template: '- Žádné změny'
+
+categories:
+  - title: '🚀 Nové funkce'
+    labels:
+      - 'feature'
+      - 'enhancement'
+  - title: '🐛 Opravy'
+    labels:
+      - 'bug'
+      - 'fix'
+      - 'bugfix'
+  - title: '🧰 Údržba'
+    labels:
+      - 'chore'
+      - 'maintenance'
+      - 'dependencies'
+
+exclude-labels:
+  - 'skip-changelog'
+
+version-resolver:
+  major:
+    labels:
+      - 'major'
+  minor:
+    labels:
+      - 'feature'
+      - 'enhancement'
+  patch:
+    labels:
+      - 'bug'
+      - 'fix'
+      - 'bugfix'
+      - 'chore'
+      - 'maintenance'
+      - 'dependencies'
+  default: patch
+
+template: |
+  ## Změny
+
+  $CHANGES
