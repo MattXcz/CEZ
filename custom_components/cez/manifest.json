@@ -8,5 +8,6 @@
   "dependencies": [],
   "codeowners": ["@mattxcz"],
   "requirements": ["aiohttp>=3.8.0"],
+  "quality_scale": "silver",
   "iot_class": "cloud_polling"
 }
