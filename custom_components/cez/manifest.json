@@ -1,8 +1,7 @@
 {
   "domain": "cez",
   "name": "ČEZ",
-  "icon": "mdi:alpha-c-circle",
-  "version": "0.1.0",
+  "version": "1.0.4",
   "config_flow": true,
   "documentation": "https://github.com/mattxcz/cez",
   "issue_tracker": "https://github.com/mattxcz/cez/issues",
