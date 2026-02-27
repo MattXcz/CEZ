@@ -27,12 +27,12 @@ jobs:
             - name: Check integration structure
               run: |
                   # Verify required files exist
-                  test -f custom_components/cez_hdo/__init__.py
-                  test -f custom_components/cez_hdo/manifest.json
+                  test -f custom_components/cez/__init__.py
+                  test -f custom_components/cez/manifest.json
                   test -f hacs.json
                   test -f README.md
                   echo "✅ All required files present"
 
                   # Verify no Python syntax errors
-                  python -m py_compile custom_components/cez_hdo/*.py
+                  python -m py_compile custom_components/cez/*.py
                   echo "✅ Python syntax validation passed"
