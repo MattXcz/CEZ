@@ -23,7 +23,7 @@ jobs:
         id: rd
         uses: release-drafter/release-drafter@v6
         with:
-          config-name: release.yml
+          config-name: release.yaml
           tag: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
         env:
