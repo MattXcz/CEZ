@@ -175,8 +175,9 @@ class CezHdoStateSensor(CezTimeAwareSensor):
     def extra_state_attributes(self) -> dict[str, Any]:
         now = datetime.now()
         intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal) or []
+        current_state = _state_for_minute(intervals, now.hour * 60 + now.minute)
 
-        current_window = _current_tariff_window_absolute(intervals, HDO_STATE_NT, now)
+        current_window = _current_tariff_window_absolute(intervals, current_state, now)
         next_window = _next_tariff_window_absolute(intervals, HDO_STATE_NT, now)
         return {
             "hdo_signal": self._hdo_signal,
