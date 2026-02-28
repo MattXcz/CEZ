@@ -52,6 +52,8 @@ Zkopírujte složku `custom_components/cez` do adresáře `config/custom_compone
 
 ## Nastavení
 
+Je nutné mít login a heslo do : https://dip.cezdistribuce.cz/ (v tuto chvíli doplněk nepracuje s přihlášením přes google či apple)
+
 Po přidání integrace zadejte:
 - **Uživatelské jméno** – e-mail k portálu ČEZ Distribuce
 - **Heslo** – heslo k portálu ČEZ Distribuce
