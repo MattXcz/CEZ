@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Sign in to ČEZ",
-        "description": "Enter your login details for the ČEZ Distribuce portal (dip.cezdistribuce.cz).",
+        "description": "Enter your login details for the ČEZ Distribuce portal (dip.cezdistribuce.cz). You can use either email + password, or callback URL/code from browser sign-in (WSO2 Identity Server, e.g. Google/Apple).",
         "data": {
           "username": "Username (email)",
-          "password": "Password"
+          "password": "Password",
+          "browser_auth": "Browser callback URL or code/ticket"
         }
       },
       "select_supply_point": {
@@ -29,7 +30,9 @@
     "error": {
       "invalid_auth": "Invalid login details. Check your email and password.",
       "cannot_connect": "Could not connect to ČEZ API. Please try again.",
-      "no_supply_points": "No supply point associated with this account was found."
+      "no_supply_points": "No supply point associated with this account was found.",
+      "missing_auth_data": "Provide either a password or browser callback URL/code.",
+      "too_many_auth_methods": "Use only one method: password or browser callback URL/code."
     },
     "abort": {
       "already_configured": "This supply point (EAN) is already configured."
