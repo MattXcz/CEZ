@@ -39,12 +39,14 @@ class CezDistribuceApiClient:
         session: aiohttp.ClientSession,
         base_url: str = CEZ_DISTRIBUCE_BASE_URL,
         client_id: str = CEZ_DISTRIBUCE_CLIENT_ID,
+        browser_auth: str | None = None,
     ) -> None:
         self._username = username
         self._password = password
         self._base_url = base_url
         self._client_id = client_id
         self._session = session
+        self._browser_auth = browser_auth
 
         redirect_url = base_url
         self._service_url = (
@@ -78,6 +80,10 @@ class CezDistribuceApiClient:
     async def login(self) -> None:
         """Přihlásí se přes CAS OAuth a načte tokeny."""
         _LOGGER.debug("Přihlašuji se do ČEZ Distribuce...")
+
+        if self._browser_auth:
+            await self._login_with_browser_auth(self._browser_auth)
+            return
 
         connector = aiohttp.TCPConnector()
         async with aiohttp.ClientSession(
@@ -134,6 +140,66 @@ class CezDistribuceApiClient:
             self._anon_cookies = anon_session.cookie_jar
 
         _LOGGER.debug("Přihlášení OK, tokeny načteny.")
+
+    async def _login_with_browser_auth(self, code_or_url: str) -> None:
+        """Přihlásí se pomocí browser callback hodnoty (WSO2/CAS).
+
+        Podporuje vložení:
+        - samotného `code`/`ticket`, nebo
+        - celé callback URL s query parametrem `code` (WSO2) nebo `ticket` (CAS).
+        """
+        auth_param, auth_value = self._extract_browser_auth_value(code_or_url)
+        if not auth_value:
+            raise CezAuthError("V callback URL nebyl nalezen parametr code ani ticket.")
+
+        connector = aiohttp.TCPConnector()
+        async with aiohttp.ClientSession(
+            connector=connector,
+            max_line_size=8190 * 4,
+            max_field_size=8190 * 4,
+        ) as auth_session:
+            auth_session._cookie_jar = self._auth_cookie_jar  # noqa: SLF001
+
+            callback_url = f"{self._service_url}&{auth_param}={urllib.parse.quote(auth_value)}"
+            async with auth_session.get(callback_url, allow_redirects=True) as resp:
+                _LOGGER.debug("Browser callback response: %s", resp.status)
+
+            async with auth_session.get(f"{self._base_url}/rest-auth-api?path=/token/get") as resp:
+                data = await resp.json(content_type=None)
+                self._api_token = data if isinstance(data, str) else data.get("data") or data.get("token")
+
+            self._auth_cookies = auth_session.cookie_jar
+
+        async with aiohttp.ClientSession() as anon_session:
+            async with anon_session.get(f"{self._base_url}/anonymous/rest-auth-api?path=/token/get") as resp:
+                data = await resp.json(content_type=None)
+                self._anon_api_token = data if isinstance(data, str) else data.get("data") or data.get("token")
+            self._anon_cookies = anon_session.cookie_jar
+
+        if not self._api_token:
+            raise CezAuthError("Browser callback code/ticket je neplatný nebo expirovaný.")
+
+        _LOGGER.debug("Přihlášení přes browser callback code/ticket OK, tokeny načteny.")
+
+    @staticmethod
+    def _extract_browser_auth_value(code_or_url: str) -> tuple[str, str]:
+        """Vrátí auth parametr a hodnotu ze vstupu (code/ticket nebo URL)."""
+        raw = code_or_url.strip()
+        if not raw:
+            return "", ""
+
+        if "code=" not in raw and "ticket=" not in raw:
+            return ("code", raw)
+
+        parsed = urllib.parse.urlparse(raw)
+        query = urllib.parse.parse_qs(parsed.query)
+        code = query.get("code", [""])[0]
+        if code:
+            return ("code", code)
+        ticket = query.get("ticket", [""])[0]
+        if ticket:
+            return ("ticket", ticket)
+        return ("", "")
 
     # ------------------------------------------------------------------
     # Interní GET / POST s retry a obnovou tokenu

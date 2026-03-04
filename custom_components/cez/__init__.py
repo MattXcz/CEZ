@@ -9,7 +9,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .api import CezDistribuceApiClient
-from .const import CONF_EAN, CONF_PASSWORD, CONF_USERNAME, DOMAIN
+from .const import CONF_BROWSER_AUTH, CONF_EAN, CONF_PASSWORD, CONF_SERVICE_TICKET, CONF_USERNAME, DOMAIN
 from .coordinator import CezDistribuceCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,12 +20,18 @@ PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Nastaví integraci z config entry."""
     username = entry.data[CONF_USERNAME]
-    password = entry.data[CONF_PASSWORD]
+    password = entry.data.get(CONF_PASSWORD, "")
+    browser_auth = entry.data.get(CONF_BROWSER_AUTH) or entry.data.get(CONF_SERVICE_TICKET, "")
     ean = entry.data[CONF_EAN]
     uid = entry.data.get("uid", "")
 
     session = aiohttp.ClientSession()
-    client = CezDistribuceApiClient(username=username, password=password, session=session)
+    client = CezDistribuceApiClient(
+        username=username,
+        password=password,
+        browser_auth=browser_auth or None,
+        session=session,
+    )
 
     try:
         await client.login()

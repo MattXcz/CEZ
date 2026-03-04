@@ -54,7 +54,10 @@ Zkopírujte složku `custom_components/cez` do adresáře `config/custom_compone
 
 Po přidání integrace zadejte:
 - **Uživatelské jméno** – e-mail k portálu ČEZ Distribuce
-- **Heslo** – heslo k portálu ČEZ Distribuce
+- **Heslo** – heslo k portálu ČEZ Distribuce **nebo**
+- **Browser callback URL / code** – hodnota `code` (WSO2 Identity Server) nebo callback URL po přihlášení v prohlížeči (např. Google/Apple login)
+
+> Zadejte vždy jen jednu metodu: heslo **nebo** browser callback URL/code.
 
 Pokud máte více odběrných míst, budete vyzváni k výběru.
 

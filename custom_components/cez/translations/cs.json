@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Přihlásit se do ČEZ",
-        "description": "Zadejte přihlašovací údaje k portálu ČEZ Distribuce (dip.cezdistribuce.cz).",
+        "description": "Zadejte přihlašovací údaje k portálu ČEZ Distribuce (dip.cezdistribuce.cz). Můžete použít buď e-mail + heslo, nebo callback URL/parametr code z přihlášení v prohlížeči (WSO2 Identity Server, např. Google/Apple).",
         "data": {
           "username": "Uživatelské jméno (e-mail)",
-          "password": "Heslo"
+          "password": "Heslo",
+          "browser_auth": "Browser callback URL nebo code/ticket"
         }
       },
       "select_supply_point": {
@@ -29,7 +30,9 @@
     "error": {
       "invalid_auth": "Nesprávné přihlašovací údaje. Zkontrolujte e-mail a heslo.",
       "cannot_connect": "Nepodařilo se připojit k ČEZ API. Zkuste to znovu.",
-      "no_supply_points": "Nebylo nalezeno žádné odběrné místo přiřazené k tomuto účtu."
+      "no_supply_points": "Nebylo nalezeno žádné odběrné místo přiřazené k tomuto účtu.",
+      "missing_auth_data": "Zadejte heslo nebo browser callback URL/code.",
+      "too_many_auth_methods": "Zadejte pouze jednu metodu: heslo nebo browser callback URL/code."
     },
     "abort": {
       "already_configured": "Toto odběrné místo (EAN) je již nakonfigurováno."
