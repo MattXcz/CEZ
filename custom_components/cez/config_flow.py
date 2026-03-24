@@ -12,11 +12,13 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .api import CezAuthError, CezDistribuceApiClient
 from .const import (
+    CONF_BROWSER_AUTH,
     CONF_EAN,
     CONF_HDO_SIGNAL,
     CONF_PASSWORD,
     CONF_PRICE_NT,
     CONF_PRICE_VT,
+    CONF_SERVICE_TICKET,
     CONF_USERNAME,
     DEFAULT_PRICE_NT,
     DEFAULT_PRICE_VT,
@@ -28,15 +30,25 @@ _LOGGER = logging.getLogger(__name__)
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
-        vol.Required(CONF_PASSWORD): str,
+        vol.Optional(CONF_PASSWORD): str,
+        vol.Optional(CONF_BROWSER_AUTH): str,
     }
 )
 
 
-async def _login_and_get_supply_points(username: str, password: str) -> list[dict]:
+async def _login_and_get_supply_points(
+    username: str,
+    password: str,
+    browser_auth: str,
+) -> list[dict]:
     """Přihlásí se a vrátí seznam odběrných míst."""
     async with aiohttp.ClientSession() as session:
-        client = CezDistribuceApiClient(username=username, password=password, session=session)
+        client = CezDistribuceApiClient(
+            username=username,
+            password=password,
+            browser_auth=browser_auth or None,
+            session=session,
+        )
         await client.login()
         data = await client.get_supply_points()
 
@@ -48,10 +60,20 @@ async def _login_and_get_supply_points(username: str, password: str) -> list[dic
     return vstelles
 
 
-async def _fetch_hdo_signals(username: str, password: str, ean: str) -> list[str]:
+async def _fetch_hdo_signals(
+    username: str,
+    password: str,
+    browser_auth: str,
+    ean: str,
+) -> list[str]:
     """Vrátí seznam unikátních HDO signálů pro daný EAN (např. ['a3b7dp01', 'a3b7dp06'])."""
     async with aiohttp.ClientSession() as session:
-        client = CezDistribuceApiClient(username=username, password=password, session=session)
+        client = CezDistribuceApiClient(
+            username=username,
+            password=password,
+            browser_auth=browser_auth or None,
+            session=session,
+        )
         await client.login()
         signals_data = await client.get_signals(ean)
 
@@ -76,6 +98,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._username: str = ""
         self._password: str = ""
+        self._browser_auth: str = ""
         self._supply_points: list[dict] = []
         self._selected_ean: str = ""
         self._selected_uid: str = ""
@@ -94,17 +117,26 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             self._username = user_input[CONF_USERNAME]
-            self._password = user_input[CONF_PASSWORD]
+            self._password = user_input.get(CONF_PASSWORD, "")
+            self._browser_auth = user_input.get(CONF_BROWSER_AUTH, "")
 
-            try:
-                self._supply_points = await _login_and_get_supply_points(
-                    self._username, self._password
-                )
-            except CezAuthError:
-                errors["base"] = "invalid_auth"
-            except Exception:
-                _LOGGER.exception("Neočekávaná chyba při přihlašování")
-                errors["base"] = "cannot_connect"
+            if not self._password and not self._browser_auth:
+                errors["base"] = "missing_auth_data"
+            elif self._password and self._browser_auth:
+                errors["base"] = "too_many_auth_methods"
+
+            if not errors:
+                try:
+                    self._supply_points = await _login_and_get_supply_points(
+                        self._username,
+                        self._password,
+                        self._browser_auth,
+                    )
+                except CezAuthError:
+                    errors["base"] = "invalid_auth"
+                except Exception:
+                    _LOGGER.exception("Neočekávaná chyba při přihlašování")
+                    errors["base"] = "cannot_connect"
 
             if not errors:
                 if not self._supply_points:
@@ -173,7 +205,10 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not self._hdo_signals:
             try:
                 self._hdo_signals = await _fetch_hdo_signals(
-                    self._username, self._password, self._selected_ean
+                    self._username,
+                    self._password,
+                    self._browser_auth,
+                    self._selected_ean,
                 )
             except Exception:
                 _LOGGER.exception("Nepodařilo se načíst HDO signály pro EAN %s", self._selected_ean)
@@ -223,6 +258,8 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data={
                 CONF_USERNAME: self._username,
                 CONF_PASSWORD: self._password,
+                CONF_BROWSER_AUTH: self._browser_auth,
+                CONF_SERVICE_TICKET: self._browser_auth,
                 CONF_EAN: self._selected_ean,
                 "uid": self._selected_uid,
                 CONF_HDO_SIGNAL: hdo_signal,

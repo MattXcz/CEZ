@@ -5,6 +5,8 @@ DOMAIN = "cez"
 # Konfigurační klíče
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
+CONF_SERVICE_TICKET = "service_ticket"
+CONF_BROWSER_AUTH = "browser_auth"
 CONF_EAN = "ean"
 CONF_HDO_SIGNAL = "hdo_signal"
 CONF_PRICE_VT = "price_vt"
