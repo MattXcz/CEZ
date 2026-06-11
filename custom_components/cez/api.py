@@ -1,6 +1,7 @@
 """Async REST klient pro ČEZ Distribuce."""
 from __future__ import annotations
 
+import json
 import logging
 import urllib.parse
 from typing import Any
@@ -119,8 +120,9 @@ class CezDistribuceApiClient:
                 _LOGGER.debug("Authorize response: %s", resp.status)
 
             # Krok 4 – načíst API token (autentizovaný)
-            async with auth_session.get(f"{self._base_url}/rest-auth-api?path=/token/get") as resp:
-                data = await resp.json(content_type=None)
+            token_url = f"{self._base_url}/rest-auth-api?path=/token/get"
+            async with auth_session.get(token_url) as resp:
+                data = await self._read_json_response(resp, token_url)
                 self._api_token = data if isinstance(data, str) else data.get("data") or data.get("token")
 
             # Uložit cookies pro pozdější použití
@@ -128,8 +130,9 @@ class CezDistribuceApiClient:
 
         # Krok 5 – anonymní token (nový session bez přihlášení)
         async with aiohttp.ClientSession() as anon_session:
-            async with anon_session.get(f"{self._base_url}/anonymous/rest-auth-api?path=/token/get") as resp:
-                data = await resp.json(content_type=None)
+            token_url = f"{self._base_url}/anonymous/rest-auth-api?path=/token/get"
+            async with anon_session.get(token_url) as resp:
+                data = await self._read_json_response(resp, token_url)
                 self._anon_api_token = data if isinstance(data, str) else data.get("data") or data.get("token")
             self._anon_cookies = anon_session.cookie_jar
 
@@ -147,6 +150,23 @@ class CezDistribuceApiClient:
 
     async def _anon_post(self, path: str, json: dict | None = None) -> Any:
         return await self._request_with_retry(authenticated=False, method="POST", path=path, json=json)
+
+    async def _read_json_response(self, resp: aiohttp.ClientResponse, url: str) -> Any:
+        """Načte JSON odpověď a převede nevalidní tělo na čitelnou API chybu."""
+        text = await resp.text()
+        if resp.status >= 400:
+            raise CezApiError(f"HTTP {resp.status} pro {url}: {text[:200] or 'prázdná odpověď'}")
+        if not text.strip():
+            raise CezApiError(f"Prázdná odpověď z {url} (HTTP {resp.status})")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as err:
+            content_type = resp.headers.get("Content-Type", "neznámý")
+            preview = text[:200].replace("\n", " ")
+            raise CezApiError(
+                f"Neplatná JSON odpověď z {url} "
+                f"(HTTP {resp.status}, Content-Type: {content_type}): {preview}"
+            ) from err
 
     async def _request_with_retry(
         self,
@@ -168,10 +188,10 @@ class CezDistribuceApiClient:
             async with aiohttp.ClientSession(cookie_jar=cookies) as s:
                 if method == "GET":
                     async with s.get(url, headers=headers) as resp:
-                        raw = await resp.json(content_type=None)
+                        raw = await self._read_json_response(resp, url)
                 else:
                     async with s.post(url, headers=headers, json=json or {}) as resp:
-                        raw = await resp.json(content_type=None)
+                        raw = await self._read_json_response(resp, url)
 
             # Zpracování odpovědi
             if isinstance(raw, dict) and "statusCode" in raw:
