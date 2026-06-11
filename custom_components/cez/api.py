@@ -30,6 +30,28 @@ class CezApiError(Exception):
     """Obecná chyba API."""
 
 
+class _InvalidJsonResponse(CezApiError):
+    """Odpověď API nebyla validní JSON."""
+
+    def __init__(self, url: str, status: int, content_type: str, preview: str) -> None:
+        self.url = url
+        self.status = status
+        self.content_type = content_type
+        self.preview = preview
+        super().__init__(
+            f"Neplatná JSON odpověď z {url} "
+            f"(HTTP {status}, Content-Type: {content_type}): {preview}"
+        )
+
+    @property
+    def looks_like_portal_html(self) -> bool:
+        """Vrací True, pokud ČEZ místo API dat vrátil HTML portál."""
+        return (
+            "text/html" in self.content_type.lower()
+            or self.preview.lower().lstrip().startswith("<html")
+        )
+
+
 class CezDistribuceApiClient:
     """Async klient pro ČEZ Distribuce REST API."""
 
@@ -156,17 +178,14 @@ class CezDistribuceApiClient:
         text = await resp.text()
         if resp.status >= 400:
             raise CezApiError(f"HTTP {resp.status} pro {url}: {text[:200] or 'prázdná odpověď'}")
+        content_type = resp.headers.get("Content-Type", "neznámý")
         if not text.strip():
-            raise CezApiError(f"Prázdná odpověď z {url} (HTTP {resp.status})")
+            raise _InvalidJsonResponse(url, resp.status, content_type, "prázdná odpověď")
         try:
             return json.loads(text)
         except json.JSONDecodeError as err:
-            content_type = resp.headers.get("Content-Type", "neznámý")
             preview = text[:200].replace("\n", " ")
-            raise CezApiError(
-                f"Neplatná JSON odpověď z {url} "
-                f"(HTTP {resp.status}, Content-Type: {content_type}): {preview}"
-            ) from err
+            raise _InvalidJsonResponse(url, resp.status, content_type, preview) from err
 
     async def _request_with_retry(
         self,
@@ -185,13 +204,23 @@ class CezDistribuceApiClient:
 
             cookies = self._auth_cookies if authenticated else self._anon_cookies
 
-            async with aiohttp.ClientSession(cookie_jar=cookies) as s:
-                if method == "GET":
-                    async with s.get(url, headers=headers) as resp:
-                        raw = await self._read_json_response(resp, url)
-                else:
-                    async with s.post(url, headers=headers, json=json or {}) as resp:
-                        raw = await self._read_json_response(resp, url)
+            try:
+                async with aiohttp.ClientSession(cookie_jar=cookies) as s:
+                    if method == "GET":
+                        async with s.get(url, headers=headers) as resp:
+                            raw = await self._read_json_response(resp, url)
+                    else:
+                        async with s.post(url, headers=headers, json=json or {}) as resp:
+                            raw = await self._read_json_response(resp, url)
+            except _InvalidJsonResponse as err:
+                if authenticated and err.looks_like_portal_html and attempt < LOGIN_RETRIES - 1:
+                    _LOGGER.debug(
+                        "ČEZ vrátil HTML portál místo JSONu, obnovuji přihlášení... (pokus %d)",
+                        attempt + 1,
+                    )
+                    await self.login()
+                    continue
+                raise
 
             # Zpracování odpovědi
             if isinstance(raw, dict) and "statusCode" in raw:
