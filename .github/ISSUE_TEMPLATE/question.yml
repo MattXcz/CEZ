@@ -8,7 +8,7 @@ body:
       value: |
         Máte dotaz? Rádi vám pomůžeme!
 
-        **Tip:** Nejdříve zkontrolujte [dokumentaci](https://github.com/Cmajda/ha_cez_distribuce/tree/main/docs).
+        **Tip:** Nejdříve zkontrolujte [dokumentaci](https://github.com/MattXcz/CEZ#readme).
 
   - type: textarea
     id: question

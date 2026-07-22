@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📚 Dokumentace
-    url: https://github.com/Cmajda/ha_cez_distribuce/tree/main/docs
+    url: https://github.com/MattXcz/CEZ#readme
     about: Před vytvořením issue zkontrolujte dokumentaci
   - name: 💬 Diskuze
-    url: https://github.com/Cmajda/ha_cez_distribuce/discussions
+    url: https://github.com/MattXcz/CEZ/discussions
     about: Pro obecné dotazy a diskuze použijte GitHub Discussions
