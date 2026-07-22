@@ -11,12 +11,17 @@ from bs4 import BeautifulSoup
 
 _LOGGER = logging.getLogger(__name__)
 
-CAS_BASE_URL = "https://cas.cez.cz/cas"
+# ČEZ přesunul centrální autentizaci (CAS/MEPAS) z cas.cez.cz na mepas.cez.cz.
+# Starý host pro starý client_id vrací 403 "Aplikace není autorizovaná k použití
+# přihlašování pomocí CASu", takže přihlašovací formulář ani pole 'execution'
+# neexistují a přihlášení selže.
+CAS_BASE_URL = "https://mepas.cez.cz/cas"
 CLIENT_NAME = "CasOAuthClient"
 RESPONSE_TYPE = "code"
 SCOPE = "openid"
 
-CEZ_DISTRIBUCE_CLIENT_ID = "fjR3ZL9zrtsNcDQF.onpremise.dip.sap.dipcezdistribucecz.prod"
+# client_id převzat z tlačítka přihlášení na https://dip.cezdistribuce.cz/irj/portal
+CEZ_DISTRIBUCE_CLIENT_ID = "emiCuDBbivwYxraX.dip.dip.ext.zak.prod.v1"
 CEZ_DISTRIBUCE_BASE_URL = "https://dip.cezdistribuce.cz/irj/portal"
 
 LOGIN_RETRIES = 2
@@ -76,10 +81,11 @@ class CezDistribuceApiClient:
             f"&redirect_uri={urllib.parse.quote(redirect_url)}"
             f"&response_type={RESPONSE_TYPE}"
             f"&client_name={CLIENT_NAME}"
+            f"&scope={SCOPE}"
         )
         self._login_url = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(self._service_url)}"
         self._authorize_url = (
-            f"{CAS_BASE_URL}/oidc/authorize"
+            f"{CAS_BASE_URL}/oidc/oidcAuthorize"
             f"?scope={SCOPE}"
             f"&response_type={RESPONSE_TYPE}"
             f"&redirect_uri={urllib.parse.quote(redirect_url)}"
