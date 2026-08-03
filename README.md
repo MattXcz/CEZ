@@ -92,4 +92,8 @@ Integrace nově správně slučuje navazující NT intervaly přes půlnoc (nap�
 
 ### Plánováno: celková dodávka (přetok) do sítě
 
-Senzor pro celkovou dodávku (přetok) aktivní energie zpět do sítě (např. u FVE) zatím není implementován – neznáme přesný název pole, které ČEZ API vrací pro účty s přetokem. Pokud máte takový účet, spusťte `scripts/dump_readings.py` (viz komentář v souboru) a přiložte výstup (bez přihlašovacích údajů) do issue nebo PR – pomůže to senzor doplnit.
+Senzor pro celkovou dodávku (přetok) aktivní energie zpět do sítě (např. u FVE) zatím není implementován.
+
+Z reálného výstupu `get_supply_points` víme, že ČEZ nemodeluje dodávku jako extra pole v odečtu – odběrné místo má typ (`S` Spotřeba, `V` Výroba, `M` Mikrozdroj, ...) a produkce/přetok patrně vede přes samostatné odběrné místo (jiný EAN) stejného typu záznamů (`stavVt`/`stavNt`), jen s opačným významem. To ale zatím nemáme ověřené na reálných datech výrobní OM.
+
+Pokud máte účet s FVE/mikrozdrojem a vidíte ve `get_supply_points` druhé odběrné místo s `"typ": "V"` nebo `"M"` (případně `"vyroba": true` / `"fve": true`), spusťte na jeho EAN `scripts/dump_readings.py` a přiložte výstup (bez přihlašovacích údajů) do issue nebo PR – pomůže to senzor doplnit.
