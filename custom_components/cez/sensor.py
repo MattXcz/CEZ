@@ -59,6 +59,7 @@ async def async_setup_entry(
             CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT),
             CezReadingSensor(coordinator, entry, ean, "VT"),
             CezReadingSensor(coordinator, entry, ean, "NT"),
+            CezTotalConsumptionSensor(coordinator, entry, ean),
             CezCurrentPriceSensor(coordinator, entry, ean, hdo_signal),
         ]
     )
@@ -356,6 +357,73 @@ class CezReadingSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity
             "status": latest.get("statusText"),
             "jednotka": latest.get("vtUnitRead" if self._tariff == "VT" else "ntUnitRead"),
         }
+
+
+class CezTotalConsumptionSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Celková spotřeba (odběr) aktivní energie – součet VT a NT z posledního odečtu."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:transmission-tower-import"
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._ean = ean
+        self._attr_unique_id = f"{ean}_total_consumption"
+        self._attr_name = "Celková spotřeba"
+        self._attr_device_info = _device_info(entry, ean)
+
+    @property
+    def native_value(self) -> float | None:
+        """Součet posledních odečtů VT a NT v kWh."""
+        latest = _latest_reading(self.coordinator.data)
+        if latest is None:
+            return None
+
+        vt = _reading_value(latest, "stavVt")
+        nt = _reading_value(latest, "stavNt")
+        if vt is None and nt is None:
+            return None
+        return (vt or 0.0) + (nt or 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        latest = _latest_reading(self.coordinator.data)
+        if latest is None:
+            return {}
+        return {
+            "spotreba_vt": _reading_value(latest, "stavVt"),
+            "spotreba_nt": _reading_value(latest, "stavNt"),
+            "datum_odectu": latest.get("datumOdectu", "").split("T")[0],
+            "cas_odectu": latest.get("casOdectu"),
+        }
+
+
+def _latest_reading(data: dict | None) -> dict | None:
+    """Vrátí poslední záznam odečtu, pokud existuje."""
+    readings = data.get(DATA_READINGS) if data else None
+    if not readings or not isinstance(readings, list):
+        return None
+    return readings[0]
+
+
+def _reading_value(reading: dict, key: str) -> float | None:
+    """Bezpečně převede hodnotu odečtu na float."""
+    raw = reading.get(key)
+    if raw is None:
+        return None
+    try:
+        return float(str(raw).strip())
+    except (ValueError, TypeError):
+        _LOGGER.warning("Nelze převést hodnotu '%s' na float (klíč %s)", raw, key)
+        return None
 
 
 def _get_todays_intervals(

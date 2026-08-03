@@ -41,6 +41,7 @@ Zkopírujte složku `custom_components/cez` do adresáře `config/custom_compone
 | `sensor.spinani_hdo_dnes` | Senzor | Počet NT intervalů dnes + detailní rozpis v atributech |
 | `sensor.spotreba_vt` | Senzor (kWh) | Poslední naměřená hodnota elektroměru – vysoký tarif |
 | `sensor.spotreba_nt` | Senzor (kWh) | Poslední naměřená hodnota elektroměru – nízký tarif |
+| `sensor.celkova_spotreba` | Senzor (kWh) | Celková spotřeba (odběr) aktivní energie – součet VT + NT |
 | `sensor.aktualni_cena` | Senzor (Kč/kWh) | Aktuální cena dle HDO stavu (VT/NT), ceny nastavíte při konfiguraci |
 | `sensor.vysoky_tarif_start` | Senzor | Začátek aktuálního (nebo nejbližšího) období VT |
 | `sensor.vysoky_tarif_konec` | Senzor | Konec aktuálního (nebo nejbližšího) období VT |
@@ -88,3 +89,7 @@ logger:
 ### Poznámka k intervalům přes půlnoc
 
 Integrace nově správně slučuje navazující NT intervaly přes půlnoc (např. `22:00-24:00` + `00:00-00:16` se vyhodnotí jako souvislé `22:00-00:16`).
+
+### Plánováno: celková dodávka (přetok) do sítě
+
+Senzor pro celkovou dodávku (přetok) aktivní energie zpět do sítě (např. u FVE) zatím není implementován – neznáme přesný název pole, které ČEZ API vrací pro účty s přetokem. Pokud máte takový účet, spusťte `scripts/dump_readings.py` (viz komentář v souboru) a přiložte výstup (bez přihlašovacích údajů) do issue nebo PR – pomůže to senzor doplnit.
