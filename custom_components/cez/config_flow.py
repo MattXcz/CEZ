@@ -12,8 +12,10 @@ from homeassistant.data_entry_flow import FlowResult
 
 from .api import CezAuthError, CezDistribuceApiClient
 from .const import (
+    CONF_ANLAGE,
     CONF_EAN,
     CONF_HDO_SIGNAL,
+    CONF_PARTNER,
     CONF_PASSWORD,
     CONF_PRICE_NT,
     CONF_PRICE_VT,
@@ -68,6 +70,21 @@ async def _fetch_hdo_signals(username: str, password: str, ean: str) -> list[str
     return unique
 
 
+async def _fetch_anlage(username: str, password: str, uid: str) -> str:
+    """Vrátí 'anlage' (SAP technické číslo) z detailu odběrného místa -
+    potřebné pro hodinovou/15min spotřebu (/pnd/data). Volitelné - pokud
+    selže, integrace se přidá i bez hodinové spotřeby (viz __init__.py,
+    který se to pak pokusí dohledat znovu při dalším startu)."""
+    async with aiohttp.ClientSession() as session:
+        client = CezDistribuceApiClient(username=username, password=password, session=session)
+        await client.login()
+        detail = await client.get_supply_point_detail(uid)
+
+    if isinstance(detail, dict):
+        return (detail.get("anlage_Dist") or {}).get("cislo") or detail.get("anlage", "")
+    return ""
+
+
 class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Průvodce nastavením integrace ČEZ."""
 
@@ -79,6 +96,8 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._supply_points: list[dict] = []
         self._selected_ean: str = ""
         self._selected_uid: str = ""
+        self._selected_partner: str = ""
+        self._selected_anlage: str = ""
         self._selected_title: str = ""
         self._hdo_signals: list[str] = []
 
@@ -178,6 +197,21 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception:
                 _LOGGER.exception("Nepodařilo se načíst HDO signály pro EAN %s", self._selected_ean)
 
+        # Zkusit dohledat 'anlage' pro hodinovou spotřebu - nepovinné, chyba
+        # tady nemá bránit dokončení nastavení integrace.
+        if not self._selected_anlage:
+            try:
+                self._selected_anlage = await _fetch_anlage(
+                    self._username, self._password, self._selected_uid
+                )
+            except Exception:
+                _LOGGER.exception(
+                    "Nepodařilo se dohledat 'anlage' pro UID %s - hodinová "
+                    "spotřeba nebude zprvu dostupná (integrace to zkusí "
+                    "znovu při příštím startu).",
+                    self._selected_uid,
+                )
+
         # Pokud nejsou žádné signály, přeskočíme krok
         if not self._hdo_signals:
             return await self._async_create_entry("", DEFAULT_PRICE_VT, DEFAULT_PRICE_NT)
@@ -203,6 +237,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Uloží vybrané odběrné místo."""
         self._selected_ean = point.get("ean", "")
         self._selected_uid = point.get("uid", "")
+        self._selected_partner = point.get("partner", "")
         adresa = point.get("adresa", {})
         self._selected_title = (
             adresa.get("adresaComplete")
@@ -225,6 +260,8 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_PASSWORD: self._password,
                 CONF_EAN: self._selected_ean,
                 "uid": self._selected_uid,
+                CONF_PARTNER: self._selected_partner,
+                CONF_ANLAGE: self._selected_anlage,
                 CONF_HDO_SIGNAL: hdo_signal,
                 CONF_PRICE_VT: price_vt,
                 CONF_PRICE_NT: price_nt,

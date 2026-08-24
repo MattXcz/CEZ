@@ -29,7 +29,16 @@ import aiohttp
 # Načteme api.py přímo ze souboru, ne přes balíček custom_components.cez –
 # ten při importu spouští __init__.py, který vyžaduje nainstalovaný
 # Home Assistant. api.py sám na Home Assistantu nezávisí (jen aiohttp/bs4).
-_API_PATH = Path(__file__).resolve().parent.parent / "custom_components" / "cez" / "api.py"
+#
+# api.py od verze s hodinovou spotřebou navíc importuje const.py (MEPAS
+# konstanty) - když selže relativní "from .const import" (nejsme balíček),
+# spadne na bare "from const import", což vyžaduje mít složku cez/ na
+# sys.path.
+_CEZ_DIR = Path(__file__).resolve().parent.parent / "custom_components" / "cez"
+if str(_CEZ_DIR) not in sys.path:
+    sys.path.insert(0, str(_CEZ_DIR))
+
+_API_PATH = _CEZ_DIR / "api.py"
 _spec = importlib.util.spec_from_file_location("cez_api", _API_PATH)
 _cez_api = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_cez_api)
