@@ -516,3 +516,36 @@ class CezDistribuceApiClient:
             "anonymous/vyhledani-odstavek?path=shutdown-search",
             json={"eans": [ean]},
         )
+
+    # ------------------------------------------------------------------
+    # Veřejné metody API (MEPAS/AWS Gateway - hodinová/15min spotřeba)
+    # ------------------------------------------------------------------
+
+    async def get_pnd_status(self, partner: str) -> Any:
+        """Seznam dostupných measurement/assembly kódů pro partnera."""
+        return await self._mepas_request("GET", f"pnd/status/{partner}")
+
+    async def get_pnd_data(
+        self,
+        partner: str,
+        ean: str,
+        date_from: str,
+        date_to: str,
+        assembly_code: str,
+    ) -> Any:
+        """Časová řada spotřeby/výkonu z /pnd/data/{partner}.
+
+        date_from/date_to jako ISO8601 s 'Z' (např. '2026-08-01T00:00:00.000Z').
+        Rozsah date_to - date_from nesmí přesáhnout MAX_PND_INTERVAL_DAYS,
+        jinak ČEZ vrátí HTTP 400.
+        """
+        return await self._mepas_request(
+            "POST",
+            f"pnd/data/{partner}",
+            json_body={
+                "assemblyCode": assembly_code,
+                "ean": ean,
+                "from": date_from,
+                "to": date_to,
+            },
+        )
