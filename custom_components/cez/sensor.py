@@ -13,7 +13,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -61,6 +61,7 @@ async def async_setup_entry(
             CezReadingSensor(coordinator, entry, ean, "NT"),
             CezTotalConsumptionSensor(coordinator, entry, ean),
             CezCurrentPriceSensor(coordinator, entry, ean, hdo_signal),
+            CezLastSuccessfulUpdateSensor(coordinator, entry, ean),
         ]
     )
 
@@ -404,6 +405,37 @@ class CezTotalConsumptionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sen
             "datum_odectu": latest.get("datumOdectu", "").split("T")[0],
             "cas_odectu": latest.get("casOdectu"),
         }
+
+
+class CezLastSuccessfulUpdateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Čas posledního úspěšného stažení všech dat z ČEZ.
+
+    Při selhání obnovy (např. auth chyba) koordinátor ponechá poslední známá
+    data a entity díky lokálně dopočítávanému odpočtu vypadají dál "živě" –
+    obyčejný hlídač dostupnosti nebo stáří entity to nepozná. Tento senzor
+    slouží jako spolehlivý indikátor, kdy se data skutečně naposledy podařilo
+    stáhnout (viz issue #21).
+    """
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:cloud-check-outline"
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{ean}_last_successful_update"
+        self._attr_name = "Poslední úspěšná aktualizace"
+        self._attr_device_info = _device_info(entry, ean)
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self.coordinator.last_successful_update
 
 
 def _latest_reading(data: dict | None) -> dict | None:

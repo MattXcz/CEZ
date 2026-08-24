@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api import CezApiError, CezAuthError, CezDistribuceApiClient
 from .const import (
@@ -34,6 +35,13 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ean = ean
         self._uid = uid
 
+        # Kdy se naposledy podařilo stáhnout úplně všechna data (bez fallbacku
+        # na poslední známá data). Entity vypadají "živě" i při rozbitém
+        # stahování (lokálně tikající odpočty), takže tohle je způsob, jak
+        # obnovu skutečně ověřit – např. přes automatizaci nebo šablonu
+        # (viz issue #21).
+        self.last_successful_update: datetime | None = None
+
         super().__init__(
             hass,
             _LOGGER,
@@ -45,11 +53,14 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Stáhne všechna potřebná data z ČEZ API."""
         previous_data = self.data or {}
         merged_data: dict[str, Any] = dict(previous_data)
+        all_fresh = True
 
         async def _load_dataset(key: str, fetcher: Any) -> None:
+            nonlocal all_fresh
             try:
                 merged_data[key] = await fetcher()
             except CezAuthError as err:
+                all_fresh = False
                 if key in previous_data:
                     _LOGGER.warning(
                         "Nelze obnovit %s kvůli autentizaci (%s), ponechávám poslední známá data.",
@@ -59,6 +70,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return
                 raise UpdateFailed(f"Chyba autentizace ČEZ: {err}") from err
             except CezApiError as err:
+                all_fresh = False
                 if key in previous_data:
                     _LOGGER.warning(
                         "Nelze obnovit %s (%s), ponechávám poslední známá data.",
@@ -68,6 +80,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return
                 raise UpdateFailed(f"Chyba ČEZ API: {err}") from err
             except Exception as err:
+                all_fresh = False
                 if key in previous_data:
                     _LOGGER.warning(
                         "Neočekávaná chyba při obnově %s (%s), ponechávám poslední známá data.",
@@ -86,5 +99,8 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if not merged_data:
             raise UpdateFailed("ČEZ nevrátil žádná data.")
+
+        if all_fresh:
+            self.last_successful_update = dt_util.utcnow()
 
         return merged_data

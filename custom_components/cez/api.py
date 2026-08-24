@@ -108,6 +108,12 @@ class CezDistribuceApiClient:
         """Přihlásí se přes CAS OAuth a načte tokeny."""
         _LOGGER.debug("Přihlašuji se do ČEZ Distribuce...")
 
+        # Vyčistit jar z předchozího přihlášení – jinak CAS při druhém a dalším
+        # přihlášení v témže procesu rozpozná platnou session, přeskočí
+        # přihlašovací formulář a přesměruje rovnou na portál, čímž zmizí
+        # pole 'execution' a login selže (viz issue #21).
+        self._auth_cookie_jar.clear()
+
         connector = aiohttp.TCPConnector()
         async with aiohttp.ClientSession(
             connector=connector,
