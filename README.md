@@ -50,6 +50,35 @@ Zkopírujte složku `custom_components/cez` do adresáře `config/custom_compone
 | `sensor.odpocet_do_konce_vysokeho_tarifu` | Senzor (min) | Minuty do konce aktuálního/nejbližšího VT (ve výchozím stavu skrytý) |
 | `sensor.odpocet_do_konce_nizkeho_tarifu` | Senzor (min) | Minuty do konce aktuálního/nejbližšího NT (ve výchozím stavu skrytý) |
 | `binary_sensor.porucha_odstavka` | Binary senzor | Hlášená porucha nebo plánovaná odstávka |
+| `sensor.hodinova_data_spotreby_k` | Senzor (diagnostický) | Konec poslední hodiny hodinové spotřeby naimportované do statistik (viz níže) |
+
+## Hodinová spotřeba (beta)
+
+> ⚠️ **Experimentální funkce (2.0.0-beta).** Vyžaduje chytrý elektroměr a používá neoficiální, reverzně analyzované API mobilní appky **Proud** (odlišné od portálu dip.cezdistribuce.cz). ČEZ ho může kdykoliv beze změny oznámení upravit. U odběratelů bez chytrého elektroměru se tahle část jen tiše přeskočí – zbytek integrace funguje beze změny.
+
+Pokud máte chytrý elektroměr, integrace navíc stahuje hodinovou spotřebu a ukládá ji jako Home Assistant dlouhodobou statistiku (`cez:<ean>_consumption`), kterou lze zobrazit např. v kartě „Graf statistik" nebo přidat jako zdroj do Energy dashboardu.
+
+Ukázka YAML pro kartu `statistics-graph`:
+
+```yaml
+type: statistics-graph
+grid_options:
+  columns: 24
+  rows: 3
+entities:
+  - cez:859182400708532693_consumption
+days_to_show: 3
+period: hour
+chart_type: bar-stack
+stat_types:
+  - change
+```
+
+Diagnostickou entitu „Hodinová data spotřeby k" najdete v **Nastavení → Zařízení a služby → ČEZ → zařízení**. Pokud přestane růst, import hodinové spotřeby vázne – zkontrolujte log (`custom_components.cez.coordinator`, viz níže).
+
+Pro ruční ověření/ladění bez běžícího HA slouží `scripts/test_pnd_consumption.py` (viz komentáře ve skriptu).
+
+Díky za reverzní analýzu appky Proud a první implementaci patří Romanu Vohradníkovi.
 
 ## Nastavení
 

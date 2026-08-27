@@ -43,13 +43,14 @@ jobs:
       # Only create GitHub Release for:
       # - stable tags: vX.Y.Z
       # - rc tags: vX.Y.ZrcN (as prerelease)
+      # - beta tags: vX.Y.ZbN (as prerelease)
       - name: Create GitHub Release
-        if: ${{ startsWith(github.ref_name, 'v') && !contains(github.ref_name, 'dev') && !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b') }}
+        if: ${{ startsWith(github.ref_name, 'v') && !contains(github.ref_name, 'dev') && !contains(github.ref_name, 'a') }}
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           body_path: release-notes.md
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'rc') }}
+          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'b') }}
           generate_release_notes: false

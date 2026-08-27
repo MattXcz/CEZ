@@ -62,6 +62,7 @@ async def async_setup_entry(
             CezTotalConsumptionSensor(coordinator, entry, ean),
             CezCurrentPriceSensor(coordinator, entry, ean, hdo_signal),
             CezLastSuccessfulUpdateSensor(coordinator, entry, ean),
+            CezConsumptionFreshnessSensor(coordinator, entry, ean),
         ]
     )
 
@@ -436,6 +437,41 @@ class CezLastSuccessfulUpdateSensor(CoordinatorEntity[CezDistribuceCoordinator],
     @property
     def native_value(self) -> datetime | None:
         return self.coordinator.last_successful_update
+
+
+class CezConsumptionFreshnessSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Do kdy máme uložená hodinová data spotřeby (diagnostická entita).
+
+    Ukazuje konec poslední hodiny, kterou se podařilo naimportovat do
+    dlouhodobých statistik (statistic_id cez:<ean>_consumption). Pokud
+    tahle hodnota přestane růst (zůstane trčet v minulosti), znamená to,
+    že import hodinové spotřeby z nějakého důvodu selhává - podívej se
+    do logu na hlášky z custom_components.cez.coordinator. U odběratelů
+    bez chytrého elektroměru (nebo bez dohledaného 'partner'/'anlage')
+    zůstane trvale "Neznámý" - to je očekávané, ostatní senzory fungují
+    normálně dál.
+    """
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:clock-check-outline"
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{ean}_consumption_data_until"
+        self._attr_name = "Hodinová data spotřeby k"
+        self._attr_device_info = _device_info(entry, ean)
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Konec poslední naimportované hodiny (UTC)."""
+        return self.coordinator.last_pnd_timestamp
 
 
 def _latest_reading(data: dict | None) -> dict | None:
