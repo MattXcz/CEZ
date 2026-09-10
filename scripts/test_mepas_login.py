@@ -38,8 +38,9 @@ SERVICE_URL = (
 )
 LOGIN_URL = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(SERVICE_URL)}"
 AUTHORIZE_URL = (
-    # issue #24: bylo "oidc/oidcAuthorize" - ČEZ na mepas.cez.cz má jen
-    # "oidc/authorize" (viz api.py), "oidcAuthorize" trvale vracelo 404.
+    # issue #24: tenhle endpoint vrací 404 (portálový client je u CAS
+    # OAuth2.0, ne OIDC - detaily v api.py), ale krok tu musí zůstat,
+    # jinak /token/get vrátí portálové HTML místo JSON.
     f"{CAS_BASE_URL}/oidc/authorize"
     f"?scope={SCOPE}"
     f"&response_type={RESPONSE_TYPE}"
@@ -129,7 +130,7 @@ def main() -> int:
     print("Cookies po loginu:", [c.name for c in cookie_jar])
 
     # --- Krok 3: GET authorize (OIDC) ----------------------------------------
-    _banner("KROK 3 – GET authorize (OIDC)")
+    _banner("KROK 3 – GET authorize (OIDC) – 404 je tu očekávané")
     print("URL:", AUTHORIZE_URL)
     status, final_url, html = _request(opener, AUTHORIZE_URL)
     print("HTTP status:", status)

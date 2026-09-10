@@ -121,12 +121,19 @@ class CezDistribuceApiClient:
             f"&scope={SCOPE}"
         )
         self._login_url = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(self._service_url)}"
-        # POZOR (issue #24): tohle bylo omylem "/oidc/oidcAuthorize" od
-        # migrace na mepas.cez.cz (commit 9fee309) - ČEZ ale na tomhle
-        # hostu má jen "/oidc/authorize" (stejně jako funkční OIDC flow v
-        # login_mepas() níže), "oidcAuthorize" tam nikdy neexistovalo a
-        # trvale to vracelo HTTP 404. Bez efektu na přihlášení (odpověď se
-        # nikde nevyužívala), ale je to skutečná chyba, ne ČEZ změna.
+        # POZOR (issue #24): tenhle request vypadá zbytečně - trvale vrací
+        # HTTP 404 a odpověď se nikde nečte - ale ODSTRANIT SE NESMÍ, viz
+        # komentář u kroku 3 níž.
+        # K tomu 404: není to změna na straně ČEZ ani špatná cesta. CAS
+        # discovery na mepas.cez.cz uvádí authorization_endpoint =
+        # /cas/oidc/oidcAuthorize a nepřihlášeně oba tvary (i tenhle
+        # /oidc/authorize) vracejí shodně 302 na /cas/login. 404 přijde až
+        # se založenou SSO session, protože portálový client_id je u CAS
+        # registrovaný jako OAuth2.0 klient (client_name=CasOAuthClient,
+        # service míří na /oauth2.0/callbackAuthorize), ne jako OIDC
+        # relying party - OIDC authorize ho tedy nenajde. Funkční
+        # login_mepas() níž na to nenarazí, používá OIDC/PKCE klienta
+        # MEPAS_CLIENT_ID.
         self._authorize_url = (
             f"{CAS_BASE_URL}/oidc/authorize"
             f"?scope={SCOPE}"
@@ -199,11 +206,15 @@ class CezDistribuceApiClient:
                 if "Nesprávné" in html or "incorrect" in html.lower():
                     raise CezAuthError("Nesprávné přihlašovací údaje.")
 
-            # Krok 3 – GET authorize URL. Odpověď se nikde nevyužívá
-            # (cookies z předchozího kroku), ale status by teď měl být
-            # 200/302 - pokud znovu vidíš 404, oprava z issue #24
-            # ("/oidc/oidcAuthorize" -> "/oidc/authorize") nesedí a stojí
-            # za další prošetření.
+            # Krok 3 – GET authorize URL. Vrací 404 a odpověď se nikde
+            # nevyužívá (viz komentář u self._authorize_url), ale krok je
+            # NUTNÝ: když se vypustil, /token/get níž začal vracet SAP
+            # portálové HTML místo JSON (ověřeno živě 10.9.2026, oba
+            # běhy diagnostického skriptu se lišily jen tímhle krokem).
+            # Vypadá to, že SAP portál potřebuje po CAS callbacku chvilku
+            # na dokončení session a tenhle request slouží jako
+            # (nezáměrná) prodleva - proto ho neodstraňuj bez toho, že
+            # místo něj přijde explicitní retry na /token/get.
             async with auth_session.get(self._authorize_url) as resp:
                 _LOGGER.debug("Authorize response: %s", resp.status)
 
