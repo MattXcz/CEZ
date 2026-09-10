@@ -158,7 +158,14 @@ def main() -> int:
         print("\n❌ Server hlásí nesprávné přihlašovací údaje.")
         print("Náhled odpovědi:\n", html[:400])
         return 1
-    if status not in (200, 302):
+    # issue #24: když řetěz přesměrování skončí na portálu s ?code=..., kód
+    # byl doručen a session založena - i když landing iView SAP portálu
+    # vrátí 404 (kontrola prohlížeče, viz api.py). Není to selhání loginu.
+    landed_with_code = "dip.cezdistribuce.cz" in final_url and "code=" in final_url
+    if status == 404 and landed_with_code:
+        print("ℹ️  404 je landing iView SAP portálu (kontrola prohlížeče), "
+              "ale URL nese ?code= - kód doručen, pokračuji.")
+    elif status not in (200, 302):
         print(f"\n❌ Neočekávaný status {status}.")
         print("Náhled odpovědi:\n", html[:400])
         return 1
