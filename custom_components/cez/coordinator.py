@@ -233,7 +233,10 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if rows:
             baseline_sum = float(rows[-1].get("sum") or 0.0)
 
+        chunk_errors: list[Exception] = []
+
         def _log_chunk_error(chunk_start: datetime, chunk_end: datetime, err: Exception) -> None:
+            chunk_errors.append(err)
             _LOGGER.debug(
                 "pnd/data pro okno %s .. %s selhalo (%s), přeskakuji.",
                 chunk_start,
@@ -252,6 +255,21 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             on_chunk_error=_log_chunk_error,
         )
         if not raw_points:
+            if chunk_errors:
+                # Všechna okna selhala (typicky opakovaný 403 z MEPAS/AWS
+                # Gateway) - statistika "{DOMAIN}:<ean>_consumption" se tedy
+                # tenhle cyklus nevytvoří/neaktualizuje vůbec (viz issue
+                # #24 - "Nemam eventu"). Bez tohoto varování to bylo vidět
+                # jen v DEBUG logu, takže si toho uživatel běžně nevšiml.
+                _LOGGER.warning(
+                    "Import hodinové spotřeby (%s) selhal pro všech %d "
+                    "stažených oken - statistika '%s' se v tomto cyklu "
+                    "nevytvoří/neaktualizuje. Poslední chyba: %s",
+                    self._ean,
+                    len(chunk_errors),
+                    self._statistic_id(),
+                    chunk_errors[-1],
+                )
             return
 
         hourly_buckets, trimmed = process_pnd_response(
