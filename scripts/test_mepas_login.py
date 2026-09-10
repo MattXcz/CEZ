@@ -38,7 +38,9 @@ SERVICE_URL = (
 )
 LOGIN_URL = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(SERVICE_URL)}"
 AUTHORIZE_URL = (
-    f"{CAS_BASE_URL}/oidc/oidcAuthorize"
+    # issue #24: bylo "oidc/oidcAuthorize" - ČEZ na mepas.cez.cz má jen
+    # "oidc/authorize" (viz api.py), "oidcAuthorize" trvale vracelo 404.
+    f"{CAS_BASE_URL}/oidc/authorize"
     f"?scope={SCOPE}"
     f"&response_type={RESPONSE_TYPE}"
     f"&redirect_uri={urllib.parse.quote(REDIRECT_URL)}"

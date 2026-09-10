@@ -121,8 +121,14 @@ class CezDistribuceApiClient:
             f"&scope={SCOPE}"
         )
         self._login_url = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(self._service_url)}"
+        # POZOR (issue #24): tohle bylo omylem "/oidc/oidcAuthorize" od
+        # migrace na mepas.cez.cz (commit 9fee309) - ČEZ ale na tomhle
+        # hostu má jen "/oidc/authorize" (stejně jako funkční OIDC flow v
+        # login_mepas() níže), "oidcAuthorize" tam nikdy neexistovalo a
+        # trvale to vracelo HTTP 404. Bez efektu na přihlášení (odpověď se
+        # nikde nevyužívala), ale je to skutečná chyba, ne ČEZ změna.
         self._authorize_url = (
-            f"{CAS_BASE_URL}/oidc/oidcAuthorize"
+            f"{CAS_BASE_URL}/oidc/authorize"
             f"?scope={SCOPE}"
             f"&response_type={RESPONSE_TYPE}"
             f"&redirect_uri={urllib.parse.quote(redirect_url)}"
