@@ -6,6 +6,10 @@ Používá jen standardní knihovnu, takže není potřeba nic instalovat.
 Spuštění:
     CEZ_USER='tvuj-login' CEZ_PASS='tvoje-heslo' python3 test_mepas_login.py
 
+Volitelné proměnné:
+    CEZ_FLOW=browser   začít authorize requestem jako prohlížeč (viz FLOW níže)
+    CEZ_UA='...'       podstrčit jiný User-Agent (kontrola prohlížeče SAP portálu)
+
 Skript projde stejné kroky jako custom_components/cez/api.py a u každého
 vypíše, co se stalo — ideální pro ověření, že host mepas.cez.cz a nový
 client_id fungují.
@@ -38,20 +42,26 @@ SERVICE_URL = (
 )
 LOGIN_URL = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(SERVICE_URL)}"
 AUTHORIZE_URL = (
-    # issue #24: druhé kolo OAuth toku - CAS vydá kód a přesměruje na SAP
-    # portál, který si dokončí session. 404 na konci řetězu vrací portál
-    # (kontrola prohlížeče v iView), ne CAS - detaily v api.py. Krok tu
-    # musí zůstat, jinak /token/get vrátí portálové HTML místo JSON.
-    f"{CAS_BASE_URL}/oidc/authorize"
-    f"?scope={SCOPE}"
-    f"&response_type={RESPONSE_TYPE}"
+    # Doslova URL tlačítka "Přihlásit" na anonymní stránce portálu - včetně
+    # cesty /oidc/oidcAuthorize a pořadí parametrů. Prohlížeč tímhle
+    # ZAČÍNÁ; legacy tok integrace to volá až po loginu jako "krok 3"
+    # (issue #24: proto je ten krok nosný a 404 na jeho konci vrací SAP
+    # portál, ne CAS - detaily v api.py).
+    f"{CAS_BASE_URL}/oidc/oidcAuthorize"
+    f"?response_type={RESPONSE_TYPE}"
     f"&redirect_uri={urllib.parse.quote(REDIRECT_URL)}"
     f"&client_id={CLIENT_ID}"
+    f"&scope={SCOPE}"
 )
 
 # Přes CEZ_UA jde podstrčit jiný User-Agent (např. reálný Chrome) a ověřit,
 # jestli na něm závisí chování SAP portálu (kontrola prohlížeče v iView).
 UA = os.environ.get("CEZ_UA", "Mozilla/5.0 (test-mepas-login)")
+# CEZ_FLOW=legacy  (výchozí) - pořadí jako api.py: login -> POST -> authorize -> token
+# CEZ_FLOW=browser - pořadí jako prohlížeč: authorize -> login -> POST -> token
+#                    (authorize se pak už neopakuje; ověřuje, že bez "kroku 3"
+#                    to v tomhle pořadí funguje)
+FLOW = os.environ.get("CEZ_FLOW", "legacy")
 
 
 def _banner(text: str) -> None:
@@ -99,11 +109,20 @@ def main() -> int:
     )
 
     # --- Krok 1: GET login stránky, vytáhnout execution token ----------------
-    _banner("KROK 1 – GET login stránky")
-    print("URL:", LOGIN_URL)
-    status, final_url, html = _request(opener, LOGIN_URL)
+    if FLOW == "browser":
+        _banner("KROK 1 – GET authorize (jako prohlížeč) -> redirect na login")
+        start_url = AUTHORIZE_URL
+    else:
+        _banner("KROK 1 – GET login stránky")
+        start_url = LOGIN_URL
+    print("Tok:", FLOW)
+    print("URL:", start_url)
+    status, final_url, html = _request(opener, start_url)
     print("HTTP status:", status)
     print("Konečná URL:", final_url)
+    # V browser toku je POST cíl login URL, na kterou nás CAS přesměroval
+    # (nese service i případný stav); v legacy toku beze změny LOGIN_URL.
+    login_post_url = final_url if FLOW == "browser" else LOGIN_URL
 
     if status == 403 or "není autorizovaná" in html:
         print("\n❌ 403 / aplikace není autorizovaná — špatný client_id nebo host.")
@@ -131,7 +150,7 @@ def main() -> int:
         "_eventId": "submit",
         "geolocation": "",
     }).encode("utf-8")
-    status, final_url, html = _request(opener, LOGIN_URL, data=form)
+    status, final_url, html = _request(opener, login_post_url, data=form)
     print("HTTP status:", status)
     print("Konečná URL:", final_url)
 
@@ -147,21 +166,10 @@ def main() -> int:
     print("Cookies po loginu:", [c.name for c in cookie_jar])
 
     # --- Krok 3: GET authorize (OIDC) ----------------------------------------
-    _banner("KROK 3 – GET authorize (OIDC) – 404 je tu očekávané")
-    print("URL:", AUTHORIZE_URL)
-    status, final_url, html = _request(opener, AUTHORIZE_URL)
-    print("HTTP status:", status)
-    print("Konečná URL:", final_url)
-    # issue #24: u ne-2xx/3xx vypisujeme hlavičky a tělo - právě tak se
-    # ukázalo, že 404 vrací SAP portál (sap-isc-etag: J2EE/irj), ne CAS.
-    if status >= 400:
-        print("Hlavičky odpovědi:")
-        for name, value in _LAST_HEADERS.items():
-            if name.lower() == "set-cookie":
-                value = value.split("=", 1)[0] + "=<skryto>"
-            print(f"   {name}: {value[:160]}")
-        print("Tělo odpovědi (náhled):")
-        print(html[:1200] if html.strip() else "   <prázdné>")
+    if FLOW == "browser":
+        _banner("KROK 3 – authorize se v browser toku neopakuje (proběhl v kroku 1)")
+    else:
+        _run_legacy_authorize(opener)
 
     # --- Krok 4: GET API token -----------------------------------------------
     _banner("KROK 4 – GET API token")
@@ -178,6 +186,25 @@ def main() -> int:
 
     print("\n⚠️  Token endpoint nevrátil čistá data (možná HTML portál nebo prázdná odpověď).")
     return 1
+
+
+def _run_legacy_authorize(opener) -> None:
+    """Legacy 'krok 3': authorize až PO přihlášení (jako dnešní api.py)."""
+    _banner("KROK 3 – GET authorize (OIDC) – 404 je tu očekávané")
+    print("URL:", AUTHORIZE_URL)
+    status, final_url, html = _request(opener, AUTHORIZE_URL)
+    print("HTTP status:", status)
+    print("Konečná URL:", final_url)
+    # issue #24: u ne-2xx/3xx vypisujeme hlavičky a tělo - právě tak se
+    # ukázalo, že 404 vrací SAP portál (sap-isc-etag: J2EE/irj), ne CAS.
+    if status >= 400:
+        print("Hlavičky odpovědi:")
+        for name, value in _LAST_HEADERS.items():
+            if name.lower() == "set-cookie":
+                value = value.split("=", 1)[0] + "=<skryto>"
+            print(f"   {name}: {value[:160]}")
+        print("Tělo odpovědi (náhled):")
+        print(html[:1200] if html.strip() else "   <prázdné>")
 
 
 if __name__ == "__main__":
