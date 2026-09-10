@@ -193,9 +193,18 @@ class CezDistribuceApiClient:
                 if "Nesprávné" in html or "incorrect" in html.lower():
                     raise CezAuthError("Nesprávné přihlašovací údaje.")
 
-            # Krok 3 – GET authorize URL
+            # Krok 3 – GET authorize URL. POZNÁMKA (issue #24): tohle
+            # dlouhodobě vrací HTTP 404 (ČEZ endpoint "oidc/oidcAuthorize"
+            # zjevně nefunguje/nepoužívá se), a to i na účtech, kde
+            # zbytek přihlášení i hodinová spotřeba běží normálně -
+            # potvrzeno na dvou různých účtech. Odpověď se nikde
+            # nevyužívá (cookies z předchozího kroku), takže 404 tady je
+            # OČEKÁVANÉ A NEŠKODNÉ - není to příznak rozbitého API.
             async with auth_session.get(self._authorize_url) as resp:
-                _LOGGER.debug("Authorize response: %s", resp.status)
+                _LOGGER.debug(
+                    "Authorize response: %s (404 je tu očekávané a neškodné, viz issue #24)",
+                    resp.status,
+                )
 
             # Krok 4 – načíst API token (autentizovaný)
             token_url = f"{self._base_url}/rest-auth-api?path=/token/get"
