@@ -121,25 +121,30 @@ class CezDistribuceApiClient:
             f"&scope={SCOPE}"
         )
         self._login_url = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(self._service_url)}"
-        # K issue #24 ("Authorize response: 404"): tenhle GET spustí druhé
-        # kolo OAuth toku - CAS (už se SSO session) vydá kód a přesměruje
-        # na redirect_uri, tj. na SAP portál dip.cezdistribuce.cz, který
-        # si tím dokončí vlastní session. Bez tohohle kroku vrací
-        # následující /token/get portálové HTML místo JSON (ověřeno
-        # 10.9.2026), takže ODSTRANIT SE NESMÍ.
+        # Tohle je doslova URL tlačítka "Přihlásit" na anonymní stránce
+        # portálu (dip.cezdistribuce.cz/irj/portal) - odtud byla kdysi
+        # opsaná, včetně cesty /oidc/oidcAuthorize a pořadí parametrů.
+        # K issue #24 ("Authorize response: 404"): prohlížeč tímhle
+        # requestem ZAČÍNÁ (authorize -> CAS přesměruje na login -> POST
+        # -> callback -> portál dostane kód). Integrace jde opačně: skočí
+        # rovnou na /cas/login?service=... a authorize volá až po
+        # přihlášení. Proto je ten krok nosný - CAS se SSO session vydá
+        # kód a přesměruje na SAP portál, který si tím teprve dokončí
+        # vlastní session. Bez něj vrací /token/get portálové HTML místo
+        # JSON (ověřeno 10.9.2026), takže ODSTRANIT SE NESMÍ, dokud se
+        # login() nepřeuspořádá do pořadí prohlížeče.
         # To 404 NEVRACÍ CAS, ale až SAP portál na konci řetězu
         # přesměrování (hlavičky sap-isc-etag: J2EE/irj, cookie
         # JSESSIONMARKID): landing iView hlásí "Could not open iView. The
         # iView is not compatible with your browser..." - kontrola
         # prohlížeče na ne-browserový User-Agent. Session cookies přitom
-        # nastaví, proto je to neškodné. Cesta /oidc/authorize je legacy
-        # alias kanonického /oidc/oidcAuthorize, obě fungují stejně.
+        # nastaví, proto je to neškodné.
         self._authorize_url = (
-            f"{CAS_BASE_URL}/oidc/authorize"
-            f"?scope={SCOPE}"
-            f"&response_type={RESPONSE_TYPE}"
+            f"{CAS_BASE_URL}/oidc/oidcAuthorize"
+            f"?response_type={RESPONSE_TYPE}"
             f"&redirect_uri={urllib.parse.quote(redirect_url)}"
             f"&client_id={client_id}"
+            f"&scope={SCOPE}"
         )
 
         # Sdílíme jeden aiohttp session, ale potřebujeme oddělit cookie jary
