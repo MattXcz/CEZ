@@ -9,7 +9,16 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .api import CezDistribuceApiClient
-from .const import CONF_ANLAGE, CONF_EAN, CONF_PARTNER, CONF_PASSWORD, CONF_USERNAME, DOMAIN
+from .const import (
+    CONF_ANLAGE,
+    CONF_EAN,
+    CONF_OM_TYPE,
+    CONF_PARTNER,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DOMAIN,
+    OM_TYPE_CONSUMPTION,
+)
 from .coordinator import CezDistribuceCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,6 +82,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     password = entry.data[CONF_PASSWORD]
     ean = entry.data[CONF_EAN]
     uid = entry.data.get("uid", "")
+    # Chybí u config entries založených před přidáním rozlišení OM typu -
+    # bere se jako běžná spotřeba, aby se chování neměnilo (viz const.py).
+    om_type = entry.data.get(CONF_OM_TYPE) or OM_TYPE_CONSUMPTION
 
     session = aiohttp.ClientSession()
     client = CezDistribuceApiClient(username=username, password=password, session=session)
@@ -87,7 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     partner, anlage = await _async_ensure_partner_and_anlage(hass, entry, client, uid)
 
     coordinator = CezDistribuceCoordinator(
-        hass, client, ean=ean, uid=uid, partner=partner, anlage=anlage
+        hass, client, ean=ean, uid=uid, partner=partner, anlage=anlage, om_type=om_type
     )
     await coordinator.async_config_entry_first_refresh()
 

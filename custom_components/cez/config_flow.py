@@ -15,6 +15,7 @@ from .const import (
     CONF_ANLAGE,
     CONF_EAN,
     CONF_HDO_SIGNAL,
+    CONF_OM_TYPE,
     CONF_PARTNER,
     CONF_PASSWORD,
     CONF_PRICE_NT,
@@ -23,6 +24,7 @@ from .const import (
     DEFAULT_PRICE_NT,
     DEFAULT_PRICE_VT,
     DOMAIN,
+    OM_TYPE_CONSUMPTION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -99,6 +101,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_partner: str = ""
         self._selected_anlage: str = ""
         self._selected_title: str = ""
+        self._selected_om_type: str = ""
         self._hdo_signals: list[str] = []
 
     # ------------------------------------------------------------------
@@ -161,7 +164,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             p["ean"]: (
                 p.get("adresa", {}).get("adresaComplete")
                 or p["ean"]
-            ) + f" ({p['ean']})"
+            ) + f" ({p['ean']}, {p.get('typText') or p.get('typ') or '?'})"
             for p in self._supply_points
             if "ean" in p
         }
@@ -188,8 +191,14 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 user_input[CONF_PRICE_NT],
             )
 
-        # Načíst dostupné signály
-        if not self._hdo_signals:
+        # HDO/tarify se týkají jen běžné spotřeby ("S") - odběrné místo
+        # výroby/mikrozdroje (FVE, typ "V"/"M") žádný spínací signál nemá,
+        # zbytečně by se jen logovala chyba/prázdný výsledek. Rovnou
+        # přeskočíme na vytvoření entry bez HDO signálu (viz issue #24 -
+        # dodávka do sítě).
+        if self._selected_om_type and self._selected_om_type != OM_TYPE_CONSUMPTION:
+            self._hdo_signals = []
+        elif not self._hdo_signals:
             try:
                 self._hdo_signals = await _fetch_hdo_signals(
                     self._username, self._password, self._selected_ean
@@ -238,10 +247,12 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_ean = point.get("ean", "")
         self._selected_uid = point.get("uid", "")
         self._selected_partner = point.get("partner", "")
+        self._selected_om_type = point.get("typ") or OM_TYPE_CONSUMPTION
         adresa = point.get("adresa", {})
+        base_title = adresa.get("adresaComplete") or f"ČEZ {self._selected_ean}"
+        type_text = point.get("typText")
         self._selected_title = (
-            adresa.get("adresaComplete")
-            or f"ČEZ {self._selected_ean}"
+            f"{base_title} ({type_text})" if type_text and type_text != "Spotřeba" else base_title
         )
 
     async def _async_create_entry(
@@ -262,6 +273,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "uid": self._selected_uid,
                 CONF_PARTNER: self._selected_partner,
                 CONF_ANLAGE: self._selected_anlage,
+                CONF_OM_TYPE: self._selected_om_type or OM_TYPE_CONSUMPTION,
                 CONF_HDO_SIGNAL: hdo_signal,
                 CONF_PRICE_VT: price_vt,
                 CONF_PRICE_NT: price_nt,

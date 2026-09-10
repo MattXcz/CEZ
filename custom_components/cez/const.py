@@ -12,6 +12,18 @@ CONF_PRICE_NT = "price_nt"
 DEFAULT_PRICE_VT = 3.30
 DEFAULT_PRICE_NT = 2.60
 
+# Typ odběrného místa (pole "typ" v odpovědi get_supply_points, viz enum
+# "typyOM"). Běžná spotřeba je "S" - integrace se historicky chovala, jako
+# by žádný jiný typ neexistoval. Výroba/mikrozdroj (FVE apod.) má vlastní
+# odběrné místo (jiný EAN) typu "V"/"M" - HDO signály a cenové tarify se ho
+# netýkají, jde o dodávku (přetok) aktivní energie DO sítě, ne odběr z ní
+# (viz README a issue #24). Chybějící/neznámý "typ" (staré config entries
+# založené před touto verzí) se bere jako běžná spotřeba, aby se chování
+# stávajících instalací nezměnilo.
+CONF_OM_TYPE = "om_type"
+OM_TYPE_CONSUMPTION = "S"
+OM_TYPES_PRODUCTION = {"V", "M"}
+
 # Nové konfigurační klíče (hodinová/15min spotřeba přes MEPAS/AWS gateway).
 # "partner" je dostupný zdarma ze stejné odpovědi jako "ean"/"uid"
 # (get_supply_points), "anlage" vyžaduje jedno volání get_supply_point_detail
