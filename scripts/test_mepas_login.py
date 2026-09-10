@@ -38,9 +38,10 @@ SERVICE_URL = (
 )
 LOGIN_URL = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(SERVICE_URL)}"
 AUTHORIZE_URL = (
-    # issue #24: tenhle endpoint vrací 404 (portálový client je u CAS
-    # OAuth2.0, ne OIDC - detaily v api.py), ale krok tu musí zůstat,
-    # jinak /token/get vrátí portálové HTML místo JSON.
+    # issue #24: druhé kolo OAuth toku - CAS vydá kód a přesměruje na SAP
+    # portál, který si dokončí session. 404 na konci řetězu vrací portál
+    # (kontrola prohlížeče v iView), ne CAS - detaily v api.py. Krok tu
+    # musí zůstat, jinak /token/get vrátí portálové HTML místo JSON.
     f"{CAS_BASE_URL}/oidc/authorize"
     f"?scope={SCOPE}"
     f"&response_type={RESPONSE_TYPE}"
@@ -48,7 +49,9 @@ AUTHORIZE_URL = (
     f"&client_id={CLIENT_ID}"
 )
 
-UA = "Mozilla/5.0 (test-mepas-login)"
+# Přes CEZ_UA jde podstrčit jiný User-Agent (např. reálný Chrome) a ověřit,
+# jestli na něm závisí chování SAP portálu (kontrola prohlížeče v iView).
+UA = os.environ.get("CEZ_UA", "Mozilla/5.0 (test-mepas-login)")
 
 
 def _banner(text: str) -> None:
@@ -75,7 +78,10 @@ def _request(opener, url: str, data: bytes | None = None) -> tuple[int, str, str
         _LAST_HEADERS.clear()
         _LAST_HEADERS.update(err.headers.items())
         body = err.read().decode("utf-8", errors="replace")
-        return err.code, url, body
+        # err.url je URL, na kterém chyba skutečně vznikla (po redirectech).
+        # Dřív se tu vracelo původní `url`, takže 404 z konce řetězu
+        # přesměrování vypadalo, jako by ho vrátil první server (issue #24).
+        return err.code, err.url or url, body
 
 
 def main() -> int:
@@ -146,9 +152,8 @@ def main() -> int:
     status, final_url, html = _request(opener, AUTHORIZE_URL)
     print("HTTP status:", status)
     print("Konečná URL:", final_url)
-    # issue #24: 404 tu je dlouhodobě, ale zatím nevíme, KDO ho vrací
-    # (CAS samotný, F5/WAF před ním, nebo ČEZ customizace). Hlavičky a
-    # tělo to rozhodnou - proto se u ne-2xx/3xx vypisují celé.
+    # issue #24: u ne-2xx/3xx vypisujeme hlavičky a tělo - právě tak se
+    # ukázalo, že 404 vrací SAP portál (sap-isc-etag: J2EE/irj), ne CAS.
     if status >= 400:
         print("Hlavičky odpovědi:")
         for name, value in _LAST_HEADERS.items():
