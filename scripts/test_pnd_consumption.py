@@ -147,10 +147,17 @@ async def main() -> int:
     parser.add_argument("--ean", help="EAN odběrného místa; jinak se vybere první")
     parser.add_argument(
         "--assembly",
-        choices=[PND_ASSEMBLY_HOURLY, PND_ASSEMBLY_15MIN],
         default=None,
         help=f"assemblyCode pro pnd/data (výchozí z const.py: {PND_ASSEMBLY_HOURLY}=hodinová kWh, "
-        f"{PND_ASSEMBLY_15MIN}=15min kW)",
+        f"{PND_ASSEMBLY_15MIN}=15min kW). Lze zadat i jiný kód z výstupu --status, "
+        "např. pro výrobní/mikrozdrojové EAN (issue #24).",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Před stahováním vypsat pnd/status/{partner} - seznam measurement/assembly "
+        "kódů, které MEPAS gateway pro partnera nabízí. Klíčové pro výrobní EAN, "
+        "kde náš výchozí kód vrací HTTP 400 (issue #24).",
     )
 
     time_group = parser.add_mutually_exclusive_group()
@@ -193,7 +200,9 @@ async def main() -> int:
     password = args.password or os.getenv("CEZ_PASS") or getpass.getpass("Heslo ČEZ: ")
 
     assembly_code = args.assembly or PND_ASSEMBLY_HOURLY
-    interval_minutes = PND_INTERVAL_MINUTES if assembly_code == PND_ASSEMBLY_HOURLY else 15
+    # Neznámý kód (např. z --status) bereme jako hodinový - jde jen o
+    # přepočet časových razítek ve zpracování, syrová data jsou v JSONu tak jako tak.
+    interval_minutes = 15 if assembly_code == PND_ASSEMBLY_15MIN else PND_INTERVAL_MINUTES
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -220,6 +229,14 @@ async def main() -> int:
             print("\n2. Přihlašuji se do MEPAS (AWS Gateway)...")
             await client.login_mepas()
             print("   OK")
+
+            if args.status:
+                print(f"\n2b. pnd/status/{partner} (dostupné measurement/assembly kódy):")
+                try:
+                    status = await client.get_pnd_status(partner)
+                    print(json.dumps(status, ensure_ascii=False, indent=2))
+                except CezApiError as err:
+                    print(f"   [chyba] pnd/status selhalo: {err}", file=sys.stderr)
 
             now = datetime.now(timezone.utc)
 
