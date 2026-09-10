@@ -37,6 +37,16 @@ SERVICE_URL = (
     f"&scope={SCOPE}"
 )
 LOGIN_URL = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(SERVICE_URL)}"
+AUTHORIZE_URL = (
+    # issue #24: bylo "oidc/oidcAuthorize" - ČEZ na mepas.cez.cz má jen
+    # "oidc/authorize" (viz api.py), "oidcAuthorize" trvale vracelo 404.
+    f"{CAS_BASE_URL}/oidc/authorize"
+    f"?scope={SCOPE}"
+    f"&response_type={RESPONSE_TYPE}"
+    f"&redirect_uri={urllib.parse.quote(REDIRECT_URL)}"
+    f"&client_id={CLIENT_ID}"
+)
+
 UA = "Mozilla/5.0 (test-mepas-login)"
 
 
@@ -118,12 +128,15 @@ def main() -> int:
     print("✅ Přihlášení prošlo (server nevrátil chybu o špatných údajích).")
     print("Cookies po loginu:", [c.name for c in cookie_jar])
 
-    # --- Krok 3: GET API token -----------------------------------------------
-    # POZN. (issue #24): mezi krokem 2 a 3 tu býval GET na CAS OIDC
-    # authorize, který vždy vracel 404 (portálový client je OAuth2.0, ne
-    # OIDC klient - viz api.py). Odpověď se nikde nepoužívala, takže je
-    # krok odstraněný, aby nemátl při diagnostice.
-    _banner("KROK 3 – GET API token")
+    # --- Krok 3: GET authorize (OIDC) ----------------------------------------
+    _banner("KROK 3 – GET authorize (OIDC)")
+    print("URL:", AUTHORIZE_URL)
+    status, final_url, html = _request(opener, AUTHORIZE_URL)
+    print("HTTP status:", status)
+    print("Konečná URL:", final_url)
+
+    # --- Krok 4: GET API token -----------------------------------------------
+    _banner("KROK 4 – GET API token")
     token_url = f"{BASE_URL}/rest-auth-api?path=/token/get"
     print("URL:", token_url)
     status, final_url, body = _request(opener, token_url)
