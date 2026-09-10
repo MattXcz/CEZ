@@ -2,18 +2,18 @@
 
 https://github.com/MattXcz/CEZ/issues/24
 
-Zatím jen draft k review, neposláno.
+Navazuje na už zveřejněné komentáře (10. 9. 2026, 08:00 / 08:52 / 09:20 / 09:22).
+Musí korigovat komentář z 09:20 ("špatně napsaný endpoint, hotfix v2.0.1") -
+ten závěr byl mylný. Zatím jen draft k review, neposláno.
 
 ---
 
-Ahoj, díky za detailní dump. Zkusili jsme `test_pnd_consumption.py` i běžící integraci na dvou vlastních účtech (jiné EANy) a MEPAS/pnd flow proběhl bez jediné chyby – přihlášení, token, `pnd/data` i import hodinových bodů do statistik v pořádku (109 bodů). Takže samotný login/pnd kód aktuálně funguje, ČEZ na něm nic nerozbil.
+Ahoj @mendreuk, ještě jednou k tomu `Authorize response: 404` - musím opravit svůj předchozí komentář. Nebyl to špatně napsaný endpoint a v2.0.1 ve skutečnosti nic neopravila (jen přejmenovala URL na ekvivalentní alias, 404 v logu zůstalo). Dohledal jsem to až dnes do konce, tak sem dávám celý obrázek:
 
-K tomu `Authorize response: 404`: je očekávané a neškodné, není to změna na straně ČEZ ani rozbité API - vidíme ho stejně na obou našich funkčních účtech. Dohledali jsme, odkud se bere: **nevrací ho CAS, ale SAP portál** `dip.cezdistribuce.cz` na konci řetězu přesměrování (`sap-isc-etag: J2EE/irj`). CAS authorize proběhne v pořádku, vydá kód a přesměruje na portál, ten si dokončí session a jeho landing iView pak odpoví 404 s hláškou "Could not open iView. The iView is not compatible with your browser..." - kontrola prohlížeče na ne-browserový User-Agent. Log integrace zatím ukazoval jen status, ne URL, proto to vypadalo jako chyba CASu. Ukázalo se, že integrace jela opačně než prohlížeč (login napřímo, authorize až potom) - proto ten krok byl nosný. `login()` je teď přeuspořádaný do pořadí prohlížeče (authorize → login → callback → portál dostane kód), takže ten řádek z logu zmizel úplně.
+**Odkud se 404 bralo.** Nevracel ho CAS na `mepas.cez.cz`, ale až **SAP portál** `dip.cezdistribuce.cz` na konci řetězu přesměrování. CAS `authorize` proběhl správně, vydal kód a přesměroval na portál (`/irj/portal?code=OC-…`); portál si kódem založil session a jeho úvodní iView pak odpověděla 404 s hláškou *"Could not open iView. The iView is not compatible with your browser…"* - kontrola prohlížeče, která ne-browserovému User-Agentu neprojde. Diagnostický skript i integrace ukazovaly jen status, ne koncovou URL, takže to vypadalo jako chyba CASu. Bylo to **kosmetické a neškodné** - přihlášení i token fungovaly, což potvrzuje i tvůj vlastní výpis (KROK 4 vrátil JSON).
 
-V tvém `dump_readings-anon.log` je ale u obou tvých odběrných míst (spotřeba i mikrozdroj) `"ammAktivni": false`. To je pole ČEZ, které říká, jestli má dané odběrné místo aktivovaný dálkový odečet – pokud je `false`, appka Proud / MEPAS gateway na `pnd/data` bude vždycky vracet 403, bez ohledu na to, jak správně proběhne přihlášení. Vypadá to jako pravděpodobná příčina toho, že ti entita `cez:<ean>_consumption` nevzniká, ne bug v integraci.
+**Proč tam ten request vůbec byl.** Integrace se přihlašovala v opačném pořadí než prohlížeč: šla rovnou na `/cas/login?service=…` a `authorize` volala až po přihlášení. Prohlížeč (tlačítko „Přihlásit" na portálu) začíná právě tím `authorize` requestem a login je jeho důsledek. Na `main` je teď `login()` přeuspořádaný do pořadí prohlížeče - jeden `authorize` na začátku, žádný opakovaný request po loginu, a ten řádek z logu zmizel úplně. Vyjde to v příštím release.
 
-Můžeš zkusit:
-1. Zjistit/požádat ČEZ Distribuci o aktivaci dálkového odečtu pro tvé odběrné místo (přes portál nebo linku).
-2. Aktualizovat na nejnovější verzi z branch `feature/pnd-hourly-consumption` – přidali jsme lepší chybové hlášky, takže pokud by to bylo něčím jiným než `ammAktivni`, uvidíš teď v logu konkrétní odpověď serveru, ne jen obecnou hlášku.
+**Pro tvůj problém se ale nic nemění** - ten 404 s ním nesouvisel. U obou tvých odběrných míst je v dumpu `"ammAktivni": false`, tj. bez aktivovaného dálkového odečtu, a MEPAS gateway pak na `pnd/data` vrací 403 bez ohledu na to, jak správně proběhne přihlášení. Proto ti entita `cez:<ean>_consumption` nevzniká. Doporučení zůstává: ověřit/požádat u ČEZ Distribuce aktivaci dálkového odečtu (portál nebo linka 800 850 860). Až bude `ammAktivni: true`, mělo by to naskočit bez dalších změn.
 
-K tomu druhému OM (mikrozdroj/FVE) – na tom teď pracujeme (podpora pro typ V/M jako samostatnou dodávku do sítě), ale zatím jsme to nemohli ověřit na reálném účtu s výrobou. Až budeš mít znovu čas, klidně přilož i výstup `dump_readings.py` spuštěný přímo na tvém mikrozdrojovém EANu – pomůže nám to doladit.
+Až budeš mít čas, pošli prosím ještě jednou výstup `dump_readings.py` (klidně i pro to mikrozdrojové EAN) - podle něj poznáme, jestli se stav u ČEZ změnil. Issue nechávám otevřené, dokud se to nepotvrdí.
