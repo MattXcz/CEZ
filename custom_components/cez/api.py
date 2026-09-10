@@ -121,8 +121,14 @@ class CezDistribuceApiClient:
             f"&scope={SCOPE}"
         )
         self._login_url = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(self._service_url)}"
+        # POZOR (issue #24): tohle bylo omylem "/oidc/oidcAuthorize" od
+        # migrace na mepas.cez.cz (commit 9fee309) - ČEZ ale na tomhle
+        # hostu má jen "/oidc/authorize" (stejně jako funkční OIDC flow v
+        # login_mepas() níže), "oidcAuthorize" tam nikdy neexistovalo a
+        # trvale to vracelo HTTP 404. Bez efektu na přihlášení (odpověď se
+        # nikde nevyužívala), ale je to skutečná chyba, ne ČEZ změna.
         self._authorize_url = (
-            f"{CAS_BASE_URL}/oidc/oidcAuthorize"
+            f"{CAS_BASE_URL}/oidc/authorize"
             f"?scope={SCOPE}"
             f"&response_type={RESPONSE_TYPE}"
             f"&redirect_uri={urllib.parse.quote(redirect_url)}"
@@ -193,18 +199,13 @@ class CezDistribuceApiClient:
                 if "Nesprávné" in html or "incorrect" in html.lower():
                     raise CezAuthError("Nesprávné přihlašovací údaje.")
 
-            # Krok 3 – GET authorize URL. POZNÁMKA (issue #24): tohle
-            # dlouhodobě vrací HTTP 404 (ČEZ endpoint "oidc/oidcAuthorize"
-            # zjevně nefunguje/nepoužívá se), a to i na účtech, kde
-            # zbytek přihlášení i hodinová spotřeba běží normálně -
-            # potvrzeno na dvou různých účtech. Odpověď se nikde
-            # nevyužívá (cookies z předchozího kroku), takže 404 tady je
-            # OČEKÁVANÉ A NEŠKODNÉ - není to příznak rozbitého API.
+            # Krok 3 – GET authorize URL. Odpověď se nikde nevyužívá
+            # (cookies z předchozího kroku), ale status by teď měl být
+            # 200/302 - pokud znovu vidíš 404, oprava z issue #24
+            # ("/oidc/oidcAuthorize" -> "/oidc/authorize") nesedí a stojí
+            # za další prošetření.
             async with auth_session.get(self._authorize_url) as resp:
-                _LOGGER.debug(
-                    "Authorize response: %s (404 je tu očekávané a neškodné, viz issue #24)",
-                    resp.status,
-                )
+                _LOGGER.debug("Authorize response: %s", resp.status)
 
             # Krok 4 – načíst API token (autentizovaný)
             token_url = f"{self._base_url}/rest-auth-api?path=/token/get"

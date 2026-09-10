@@ -8,7 +8,7 @@ Zatím jen draft k review, neposláno.
 
 Ahoj, díky za detailní dump. Zkusili jsme `test_pnd_consumption.py` i běžící integraci na dvou vlastních účtech (jiné EANy) a MEPAS/pnd flow proběhl bez jediné chyby – přihlášení, token, `pnd/data` i import hodinových bodů do statistik v pořádku (109 bodů). Takže samotný login/pnd kód aktuálně funguje, ČEZ na něm nic nerozbil.
 
-Mimochodem `Authorize response: 404` v debug logu vidíme na obou funkčních účtech úplně stejně – je to tedy dlouhodobě očekávané a neškodné (odpověď se nikde nevyužívá), ne příznak rozbitého API. Omlouváme se za zmatení v předchozím komentáři.
+Ten `Authorize response: 404` jsme mezitím dohledali - je to skutečná chyba, ne změna na straně ČEZ: při migraci na mepas.cez.cz (v1.1.0) se omylem přejmenoval endpoint na `/oidc/oidcAuthorize`, který na tomhle hostu neexistuje (ten správný, funkční tvar je `/oidc/authorize` - stejný, jaký používá i fungující MEPAS přihlášení pár řádků níž). Bez vlivu na zbytek přihlášení (odpověď se nikde nevyužívala), ale opraveno na `feature/pnd-hourly-consumption`.
 
 V tvém `dump_readings-anon.log` je ale u obou tvých odběrných míst (spotřeba i mikrozdroj) `"ammAktivni": false`. To je pole ČEZ, které říká, jestli má dané odběrné místo aktivovaný dálkový odečet – pokud je `false`, appka Proud / MEPAS gateway na `pnd/data` bude vždycky vracet 403, bez ohledu na to, jak správně proběhne přihlášení. Vypadá to jako pravděpodobná příčina toho, že ti entita `cez:<ean>_consumption` nevzniká, ne bug v integraci.
 
