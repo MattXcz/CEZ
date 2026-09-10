@@ -44,7 +44,6 @@ _LOGGER = logging.getLogger(__name__)
 # přihlašování pomocí CASu", takže přihlašovací formulář ani pole 'execution'
 # neexistují a přihlášení selže.
 CAS_BASE_URL = "https://mepas.cez.cz/cas"
-CLIENT_NAME = "CasOAuthClient"
 RESPONSE_TYPE = "code"
 SCOPE = "openid"
 
@@ -112,33 +111,15 @@ class CezDistribuceApiClient:
         self._session = session
 
         redirect_url = base_url
-        self._service_url = (
-            f"{CAS_BASE_URL}/oauth2.0/callbackAuthorize"
-            f"?client_id={client_id}"
-            f"&redirect_uri={urllib.parse.quote(redirect_url)}"
-            f"&response_type={RESPONSE_TYPE}"
-            f"&client_name={CLIENT_NAME}"
-            f"&scope={SCOPE}"
-        )
-        self._login_url = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(self._service_url)}"
-        # Tohle je doslova URL tlačítka "Přihlásit" na anonymní stránce
-        # portálu (dip.cezdistribuce.cz/irj/portal) - odtud byla kdysi
-        # opsaná, včetně cesty /oidc/oidcAuthorize a pořadí parametrů.
-        # K issue #24 ("Authorize response: 404"): prohlížeč tímhle
-        # requestem ZAČÍNÁ (authorize -> CAS přesměruje na login -> POST
-        # -> callback -> portál dostane kód). Integrace jde opačně: skočí
-        # rovnou na /cas/login?service=... a authorize volá až po
-        # přihlášení. Proto je ten krok nosný - CAS se SSO session vydá
-        # kód a přesměruje na SAP portál, který si tím teprve dokončí
-        # vlastní session. Bez něj vrací /token/get portálové HTML místo
-        # JSON (ověřeno 10.9.2026), takže ODSTRANIT SE NESMÍ, dokud se
-        # login() nepřeuspořádá do pořadí prohlížeče.
-        # To 404 NEVRACÍ CAS, ale až SAP portál na konci řetězu
-        # přesměrování (hlavičky sap-isc-etag: J2EE/irj, cookie
-        # JSESSIONMARKID): landing iView hlásí "Could not open iView. The
-        # iView is not compatible with your browser..." - kontrola
-        # prohlížeče na ne-browserový User-Agent. Session cookies přitom
-        # nastaví, proto je to neškodné.
+        self._portal_host = urllib.parse.urlparse(base_url).hostname
+        # Doslova URL tlačítka "Přihlásit" na anonymní stránce portálu
+        # (dip.cezdistribuce.cz/irj/portal), včetně cesty /oidc/oidcAuthorize
+        # a pořadí parametrů. login() tímhle requestem ZAČÍNÁ, stejně jako
+        # prohlížeč: CAS bez SSO session přesměruje na /cas/login?service=...,
+        # po POSTu přihlašovacích údajů jde řetěz callbackAuthorize -> portál
+        # ?code=..., a portál si kódem založí session. Dřív integrace jela
+        # opačně (login napřímo, authorize až potom jako "krok 3") - fungovalo
+        # to, ale s matoucím "Authorize response: 404" v logu (issue #24).
         self._authorize_url = (
             f"{CAS_BASE_URL}/oidc/oidcAuthorize"
             f"?response_type={RESPONSE_TYPE}"
@@ -167,7 +148,15 @@ class CezDistribuceApiClient:
     # ------------------------------------------------------------------
 
     async def login(self) -> None:
-        """Přihlásí se přes CAS OAuth a načte tokeny."""
+        """Přihlásí se přes CAS OAuth a načte tokeny.
+
+        Pořadí kroků kopíruje prohlížeč (ověřeno diagnostickým skriptem
+        scripts/test_mepas_login.py s CEZ_FLOW=browser, issue #24):
+          1) GET oidcAuthorize -> CAS přesměruje na login formulář
+          2) POST přihlašovacích údajů -> callback -> portál dostane kód
+          3) GET /token/get (autentizovaný API token)
+          4) anonymní token v čistém sessionu
+        """
         _LOGGER.debug("Přihlašuji se do ČEZ Distribuce...")
 
         # Vyčistit jar z předchozího přihlášení – jinak CAS při druhém a dalším
@@ -184,9 +173,16 @@ class CezDistribuceApiClient:
         ) as auth_session:
             auth_session._cookie_jar = self._auth_cookie_jar  # noqa: SLF001
 
-            # Krok 1 – GET login stránky, vytáhnout execution token
-            async with auth_session.get(self._login_url) as resp:
+            # Krok 1 – GET authorize (jako prohlížeč). Bez SSO session nás
+            # CAS přesměruje na /cas/login?service=... s formulářem; resp.url
+            # je pak ta login URL, na kterou míří POST v kroku 2.
+            async with auth_session.get(self._authorize_url) as resp:
+                login_url = str(resp.url)
                 html = await resp.text()
+            if "/cas/login" not in login_url:
+                raise CezAuthError(
+                    f"CAS authorize: neočekávané přesměrování na {login_url!r}"
+                )
 
             soup = BeautifulSoup(html, "html.parser")
             execution_input = soup.find("input", {"name": "execution"})
@@ -194,9 +190,14 @@ class CezDistribuceApiClient:
                 raise CezAuthError("Nepodařilo se najít execution token na přihlašovací stránce.")
             execution = execution_input.get("value", "")
 
-            # Krok 2 – POST přihlašovacích údajů
+            # Krok 2 – POST přihlašovacích údajů. Řetěz přesměrování končí
+            # na portálu /irj/portal?code=... - tím je kód doručen a session
+            # založená. Landing iView SAP portálu ale ne-browserovému
+            # User-Agentu vrací 404 ("Could not open iView. The iView is not
+            # compatible with your browser..."); to je kosmetické, cookies
+            # jsou nastavené a /token/get níž funguje (issue #24).
             async with auth_session.post(
-                self._login_url,
+                login_url,
                 data={
                     "username": self._username,
                     "password": self._password,
@@ -205,25 +206,22 @@ class CezDistribuceApiClient:
                     "geolocation": "",
                 },
             ) as resp:
-                if resp.status not in (200, 302):
-                    raise CezAuthError(f"Přihlášení selhalo, HTTP {resp.status}")
-                html = await resp.text()
-                if "Nesprávné" in html or "incorrect" in html.lower():
-                    raise CezAuthError("Nesprávné přihlašovací údaje.")
-
-            # Krok 3 – druhé kolo authorize (viz komentář u
-            # self._authorize_url). Status bývá 404 od SAP portálu na
-            # konci řetězu přesměrování - logujeme i resp.url, aby bylo
-            # v logu vidět, kdo skutečně odpověděl.
-            async with auth_session.get(self._authorize_url) as resp:
-                _LOGGER.debug(
-                    "Authorize response: %s z %s (404 od SAP portálu je "
-                    "očekávané, viz issue #24)",
-                    resp.status,
-                    resp.url,
+                landed_with_code = (
+                    resp.url.host == self._portal_host and "code" in resp.url.query
                 )
+                if resp.status == 404 and landed_with_code:
+                    _LOGGER.debug(
+                        "Portál vrátil 404 z landing iView (%s), kód doručen - pokračuji",
+                        resp.url,
+                    )
+                elif resp.status not in (200, 302):
+                    raise CezAuthError(f"Přihlášení selhalo, HTTP {resp.status}")
+                else:
+                    html = await resp.text()
+                    if "Nesprávné" in html or "incorrect" in html.lower():
+                        raise CezAuthError("Nesprávné přihlašovací údaje.")
 
-            # Krok 4 – načíst API token (autentizovaný)
+            # Krok 3 – načíst API token (autentizovaný)
             token_url = f"{self._base_url}/rest-auth-api?path=/token/get"
             async with auth_session.get(token_url) as resp:
                 data = await self._read_json_response(resp, token_url)
@@ -232,7 +230,7 @@ class CezDistribuceApiClient:
             # Uložit cookies pro pozdější použití
             self._auth_cookies = auth_session.cookie_jar
 
-        # Krok 5 – anonymní token (nový session bez přihlášení)
+        # Krok 4 – anonymní token (nový session bez přihlášení)
         async with aiohttp.ClientSession() as anon_session:
             token_url = f"{self._base_url}/anonymous/rest-auth-api?path=/token/get"
             async with anon_session.get(token_url) as resp:
