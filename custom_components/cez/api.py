@@ -121,19 +121,19 @@ class CezDistribuceApiClient:
             f"&scope={SCOPE}"
         )
         self._login_url = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(self._service_url)}"
-        # POZOR (issue #24): tenhle request vypadá zbytečně - trvale vrací
-        # HTTP 404 a odpověď se nikde nečte - ale ODSTRANIT SE NESMÍ, viz
-        # komentář u kroku 3 níž.
-        # K tomu 404: není to změna na straně ČEZ ani špatná cesta. CAS
-        # discovery na mepas.cez.cz uvádí authorization_endpoint =
-        # /cas/oidc/oidcAuthorize a nepřihlášeně oba tvary (i tenhle
-        # /oidc/authorize) vracejí shodně 302 na /cas/login. 404 přijde až
-        # se založenou SSO session, protože portálový client_id je u CAS
-        # registrovaný jako OAuth2.0 klient (client_name=CasOAuthClient,
-        # service míří na /oauth2.0/callbackAuthorize), ne jako OIDC
-        # relying party - OIDC authorize ho tedy nenajde. Funkční
-        # login_mepas() níž na to nenarazí, používá OIDC/PKCE klienta
-        # MEPAS_CLIENT_ID.
+        # K issue #24 ("Authorize response: 404"): tenhle GET spustí druhé
+        # kolo OAuth toku - CAS (už se SSO session) vydá kód a přesměruje
+        # na redirect_uri, tj. na SAP portál dip.cezdistribuce.cz, který
+        # si tím dokončí vlastní session. Bez tohohle kroku vrací
+        # následující /token/get portálové HTML místo JSON (ověřeno
+        # 10.9.2026), takže ODSTRANIT SE NESMÍ.
+        # To 404 NEVRACÍ CAS, ale až SAP portál na konci řetězu
+        # přesměrování (hlavičky sap-isc-etag: J2EE/irj, cookie
+        # JSESSIONMARKID): landing iView hlásí "Could not open iView. The
+        # iView is not compatible with your browser..." - kontrola
+        # prohlížeče na ne-browserový User-Agent. Session cookies přitom
+        # nastaví, proto je to neškodné. Cesta /oidc/authorize je legacy
+        # alias kanonického /oidc/oidcAuthorize, obě fungují stejně.
         self._authorize_url = (
             f"{CAS_BASE_URL}/oidc/authorize"
             f"?scope={SCOPE}"
@@ -206,17 +206,17 @@ class CezDistribuceApiClient:
                 if "Nesprávné" in html or "incorrect" in html.lower():
                     raise CezAuthError("Nesprávné přihlašovací údaje.")
 
-            # Krok 3 – GET authorize URL. Vrací 404 a odpověď se nikde
-            # nevyužívá (viz komentář u self._authorize_url), ale krok je
-            # NUTNÝ: když se vypustil, /token/get níž začal vracet SAP
-            # portálové HTML místo JSON (ověřeno živě 10.9.2026, oba
-            # běhy diagnostického skriptu se lišily jen tímhle krokem).
-            # Vypadá to, že SAP portál potřebuje po CAS callbacku chvilku
-            # na dokončení session a tenhle request slouží jako
-            # (nezáměrná) prodleva - proto ho neodstraňuj bez toho, že
-            # místo něj přijde explicitní retry na /token/get.
+            # Krok 3 – druhé kolo authorize (viz komentář u
+            # self._authorize_url). Status bývá 404 od SAP portálu na
+            # konci řetězu přesměrování - logujeme i resp.url, aby bylo
+            # v logu vidět, kdo skutečně odpověděl.
             async with auth_session.get(self._authorize_url) as resp:
-                _LOGGER.debug("Authorize response: %s", resp.status)
+                _LOGGER.debug(
+                    "Authorize response: %s z %s (404 od SAP portálu je "
+                    "očekávané, viz issue #24)",
+                    resp.status,
+                    resp.url,
+                )
 
             # Krok 4 – načíst API token (autentizovaný)
             token_url = f"{self._base_url}/rest-auth-api?path=/token/get"
