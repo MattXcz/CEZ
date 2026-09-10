@@ -52,6 +52,8 @@ Zkopírujte složku `custom_components/cez` do adresáře `config/custom_compone
 | `binary_sensor.porucha_odstavka` | Binary senzor | Hlášená porucha nebo plánovaná odstávka |
 | `sensor.hodinova_data_spotreby_k` | Senzor (diagnostický) | Konec poslední hodiny hodinové spotřeby naimportované do statistik (viz níže) |
 
+Pokud přidáte odběrné místo typu **Výroba/Mikrozdroj** (FVE, `typ` `V`/`M` z `get_supply_points` – viz níže), entity se liší: HDO/tarifové senzory se nevytváří (netýkají se dodávky do sítě) a místo `sensor.celkova_spotreba` se vytvoří `sensor.celkova_dodavka_do_site`.
+
 ## Hodinová spotřeba (beta)
 
 > ⚠️ **Experimentální funkce (2.0.0-beta).** Vyžaduje chytrý elektroměr a používá neoficiální, reverzně analyzované API mobilní appky **Proud** (odlišné od portálu dip.cezdistribuce.cz). ČEZ ho může kdykoliv beze změny oznámení upravit. U odběratelů bez chytrého elektroměru se tahle část jen tiše přeskočí – zbytek integrace funguje beze změny.
@@ -119,10 +121,12 @@ logger:
 
 Integrace nově správně slučuje navazující NT intervaly přes půlnoc (např. `22:00-24:00` + `00:00-00:16` se vyhodnotí jako souvislé `22:00-00:16`).
 
-### Plánováno: celková dodávka (přetok) do sítě
+### Celková dodávka (přetok) do sítě – výroba/mikrozdroj
 
-Senzor pro celkovou dodávku (přetok) aktivní energie zpět do sítě (např. u FVE) zatím není implementován.
+Pokud máte FVE/mikrozdroj, ČEZ nemodeluje dodávku jako extra pole v odečtu – dodávka/přetok vede přes samostatné odběrné místo (jiný EAN, `typ` `V` Výroba nebo `M` Mikrozdroj v `get_supply_points`), se stejnou strukturou odečtů (`stavVt`/`stavNt`) jako běžná spotřeba, jen s opačným významem.
 
-Z reálného výstupu `get_supply_points` víme, že ČEZ nemodeluje dodávku jako extra pole v odečtu – odběrné místo má typ (`S` Spotřeba, `V` Výroba, `M` Mikrozdroj, ...) a produkce/přetok patrně vede přes samostatné odběrné místo (jiný EAN) stejného typu záznamů (`stavVt`/`stavNt`), jen s opačným významem. To ale zatím nemáme ověřené na reálných datech výrobní OM.
+Integrace to teď rozpozná automaticky: při nastavení znovu spusťte průvodce (**Nastavení → Zařízení a služby → ČEZ → Přidat zařízení**) a tentokrát vyberte to druhé odběrné místo (typ Výroba/Mikrozdroj). Založí se samostatná config entry bez HDO/tarifových senzorů, se senzorem `sensor.celkova_dodavka_do_site` a hodinovou statistikou `cez:<ean>_production` (analogicky k `_consumption`).
 
-Pokud máte účet s FVE/mikrozdrojem a vidíte ve `get_supply_points` druhé odběrné místo s `"typ": "V"` nebo `"M"` (případně `"vyroba": true` / `"fve": true`), spusťte na jeho EAN `scripts/dump_readings.py` a přiložte výstup (bez přihlašovacích údajů) do issue nebo PR – pomůže to senzor doplnit.
+Tohle je zatím založené na struktuře `get_supply_points` (pole `typ`/`typText`), ne na reálně ověřených datech `get_readings`/`pnd/data` pro výrobní OM – pokud vám čísla nebo chování nesedí, přiložte anonymizovaný výstup `scripts/dump_readings.py` spuštěný na EAN výrobního odběrného místa do issue.
+
+Poznámka k issue #24: pokud vám hodinová statistika (spotřeby i dodávky) vůbec nevzniká, zkontrolujte v `get_supply_points` pole `"ammAktivni"` u vašeho odběrného místa – `false` znamená, že ČEZ pro něj (zatím) nemá aktivovaný dálkový odečet, takže appka Proud / MEPAS bude na `pnd/data` vždy vracet 403 bez ohledu na to, jak je integrace nastavená.

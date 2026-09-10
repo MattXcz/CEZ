@@ -29,6 +29,8 @@ from .const import (
     DATA_SIGNALS,
     DOMAIN,
     MAX_PND_INTERVAL_DAYS,
+    OM_TYPE_CONSUMPTION,
+    OM_TYPES_PRODUCTION,
     PND_ASSEMBLY_CODE,
     PND_INTERVAL_MINUTES,
     PND_TRAILING_SAFETY_DAYS,
@@ -57,12 +59,18 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         uid: str,
         partner: str = "",
         anlage: str = "",
+        om_type: str = OM_TYPE_CONSUMPTION,
     ) -> None:
         self._client = client
         self._ean = ean
         self._uid = uid
         self._partner = partner
         self._anlage = anlage
+        self._om_type = om_type or OM_TYPE_CONSUMPTION
+        # Výroba/mikrozdroj (FVE) - dodávka aktivní energie DO sítě, ne
+        # odběr z ní. HDO signály/tarify se jí netýkají a hodinová
+        # statistika se pojmenovává jinak (viz issue #24).
+        self._is_production = self._om_type in OM_TYPES_PRODUCTION
 
         # Kdy se naposledy podařilo stáhnout úplně všechna data (bez fallbacku
         # na poslední známá data). Entity vypadají "živě" i při rozbitém
@@ -128,7 +136,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         try:
             await _load_dataset(DATA_READINGS, lambda: self._client.get_readings(self._uid))
-            await _load_dataset(DATA_SIGNALS, lambda: self._client.get_signals(self._ean))
+            if not self._is_production:
+                # HDO spínací signály existují jen pro odběrná místa běžné
+                # spotřeby - u výroby/mikrozdroje by šlo jen o zbytečné
+                # volání API navíc bez užitku.
+                await _load_dataset(DATA_SIGNALS, lambda: self._client.get_signals(self._ean))
             await _load_dataset(DATA_OUTAGES, lambda: self._client.get_outages(self._ean))
         except UpdateFailed:
             raise
@@ -171,7 +183,8 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _statistic_id(self) -> str:
         # DŮLEŽITÉ: statistic_id smí obsahovat jen [a-z0-9_] za dvojtečkou.
         safe_id = re.sub(r"[^a-z0-9_]", "_", self._ean.lower())
-        return f"{DOMAIN}:{safe_id}_consumption"
+        suffix = "production" if self._is_production else "consumption"
+        return f"{DOMAIN}:{safe_id}_{suffix}"
 
     async def _async_update_pnd_statistics(self) -> None:
         statistic_id = self._statistic_id()
@@ -233,7 +246,10 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if rows:
             baseline_sum = float(rows[-1].get("sum") or 0.0)
 
+        chunk_errors: list[Exception] = []
+
         def _log_chunk_error(chunk_start: datetime, chunk_end: datetime, err: Exception) -> None:
+            chunk_errors.append(err)
             _LOGGER.debug(
                 "pnd/data pro okno %s .. %s selhalo (%s), přeskakuji.",
                 chunk_start,
@@ -252,6 +268,22 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             on_chunk_error=_log_chunk_error,
         )
         if not raw_points:
+            if chunk_errors:
+                # Všechna okna selhala (typicky opakovaný 403 z MEPAS/AWS
+                # Gateway) - statistika "{DOMAIN}:<ean>_consumption/_production"
+                # se tedy tenhle cyklus nevytvoří/neaktualizuje vůbec (viz
+                # issue #24 - "Nemam eventu"). Bez tohoto varování to bylo
+                # vidět jen v DEBUG logu, takže si toho uživatel běžně nevšiml.
+                _LOGGER.warning(
+                    "Import hodinových dat (%s, %s) selhal pro všech %d "
+                    "stažených oken - statistika '%s' se v tomto cyklu "
+                    "nevytvoří/neaktualizuje. Poslední chyba: %s",
+                    self._ean,
+                    "výroba" if self._is_production else "spotřeba",
+                    len(chunk_errors),
+                    statistic_id,
+                    chunk_errors[-1],
+                )
             return
 
         hourly_buckets, trimmed = process_pnd_response(
@@ -282,10 +314,15 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 }
             )
 
+        stat_name = (
+            f"ČEZ dodávka do sítě {self._ean}"
+            if self._is_production
+            else f"ČEZ spotřeba {self._ean}"
+        )
         metadata = {
             "has_mean": False,
             "has_sum": True,
-            "name": f"ČEZ spotřeba {self._ean}",
+            "name": stat_name,
             "source": DOMAIN,
             "statistic_id": statistic_id,
             "unit_of_measurement": UnitOfEnergy.KILO_WATT_HOUR,

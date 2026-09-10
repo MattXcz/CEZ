@@ -21,6 +21,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     CONF_EAN,
     CONF_HDO_SIGNAL,
+    CONF_OM_TYPE,
     CONF_PRICE_NT,
     CONF_PRICE_VT,
     DATA_READINGS,
@@ -31,6 +32,8 @@ from .const import (
     HDO_STATE_NT,
     HDO_STATE_UNKNOWN,
     HDO_STATE_VT,
+    OM_TYPE_CONSUMPTION,
+    OM_TYPES_PRODUCTION,
 )
 from .coordinator import CezDistribuceCoordinator
 
@@ -46,25 +49,41 @@ async def async_setup_entry(
     coordinator: CezDistribuceCoordinator = hass.data[DOMAIN][entry.entry_id]
     ean = entry.data[CONF_EAN]
     hdo_signal = entry.data.get(CONF_HDO_SIGNAL, "")
+    # Chybí u config entries založených před přidáním rozlišení OM typu -
+    # bere se jako běžná spotřeba, aby se chování stávajících instalací
+    # nezměnilo (viz const.py).
+    om_type = entry.data.get(CONF_OM_TYPE) or OM_TYPE_CONSUMPTION
+    is_production = om_type in OM_TYPES_PRODUCTION
 
-    async_add_entities(
-        [
-            CezHdoStateSensor(coordinator, entry, ean, hdo_signal),
-            CezHdoScheduleSensor(coordinator, entry, ean, hdo_signal),
-            CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT, "start"),
-            CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT, "end"),
-            CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT, "start"),
-            CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT, "end"),
-            CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT),
-            CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT),
-            CezReadingSensor(coordinator, entry, ean, "VT"),
-            CezReadingSensor(coordinator, entry, ean, "NT"),
-            CezTotalConsumptionSensor(coordinator, entry, ean),
-            CezCurrentPriceSensor(coordinator, entry, ean, hdo_signal),
-            CezLastSuccessfulUpdateSensor(coordinator, entry, ean),
-            CezConsumptionFreshnessSensor(coordinator, entry, ean),
-        ]
-    )
+    entities: list[SensorEntity] = [
+        CezReadingSensor(coordinator, entry, ean, "VT"),
+        CezReadingSensor(coordinator, entry, ean, "NT"),
+        CezLastSuccessfulUpdateSensor(coordinator, entry, ean),
+        CezConsumptionFreshnessSensor(coordinator, entry, ean, is_production),
+    ]
+
+    if is_production:
+        # Výroba/mikrozdroj (FVE) - dodávka aktivní energie DO sítě. HDO
+        # spínání a cenové tarify se jí netýkají, žádný takový senzor tu
+        # proto není (viz README a issue #24).
+        entities.append(CezTotalProductionSensor(coordinator, entry, ean))
+    else:
+        entities.extend(
+            [
+                CezHdoStateSensor(coordinator, entry, ean, hdo_signal),
+                CezHdoScheduleSensor(coordinator, entry, ean, hdo_signal),
+                CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT, "start"),
+                CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT, "end"),
+                CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT, "start"),
+                CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT, "end"),
+                CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT),
+                CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT),
+                CezTotalConsumptionSensor(coordinator, entry, ean),
+                CezCurrentPriceSensor(coordinator, entry, ean, hdo_signal),
+            ]
+        )
+
+    async_add_entities(entities)
 
 
 class CezTimeAwareSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
@@ -408,6 +427,59 @@ class CezTotalConsumptionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sen
         }
 
 
+class CezTotalProductionSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Celková dodávka (přetok) aktivní energie do sítě - odběrné místo
+    typu výroba/mikrozdroj (FVE apod.), součet VT a NT z posledního odečtu.
+
+    Stejné API volání (get_readings) jako u běžné spotřeby - ČEZ podle
+    všeho nemodeluje dodávku jako extra pole odečtu, ale jako samostatné
+    odběrné místo (jiný EAN, typ "V"/"M") se stejnou strukturou dat, jen
+    s opačným významem (viz README, issue #24)."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:transmission-tower-export"
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._ean = ean
+        self._attr_unique_id = f"{ean}_total_production"
+        self._attr_name = "Celková dodávka do sítě"
+        self._attr_device_info = _device_info(entry, ean)
+
+    @property
+    def native_value(self) -> float | None:
+        """Součet posledních odečtů VT a NT v kWh."""
+        latest = _latest_reading(self.coordinator.data)
+        if latest is None:
+            return None
+
+        vt = _reading_value(latest, "stavVt")
+        nt = _reading_value(latest, "stavNt")
+        if vt is None and nt is None:
+            return None
+        return (vt or 0.0) + (nt or 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        latest = _latest_reading(self.coordinator.data)
+        if latest is None:
+            return {}
+        return {
+            "dodavka_vt": _reading_value(latest, "stavVt"),
+            "dodavka_nt": _reading_value(latest, "stavNt"),
+            "datum_odectu": latest.get("datumOdectu", "").split("T")[0],
+            "cas_odectu": latest.get("casOdectu"),
+        }
+
+
 class CezLastSuccessfulUpdateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
     """Čas posledního úspěšného stažení všech dat z ČEZ.
 
@@ -462,10 +534,16 @@ class CezConsumptionFreshnessSensor(CoordinatorEntity[CezDistribuceCoordinator],
         coordinator: CezDistribuceCoordinator,
         entry: ConfigEntry,
         ean: str,
+        is_production: bool = False,
     ) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{ean}_consumption_data_until"
-        self._attr_name = "Hodinová data spotřeby k"
+        # DŮLEŽITÉ: unique_id u existujících (spotřebových) instalací se
+        # nesmí měnit, jinak HA založí novou entitu a ztratí historii -
+        # jiné unique_id proto dostávají jen NOVĚ vytvářené produkční
+        # config entries (viz issue #24).
+        suffix = "production_data_until" if is_production else "consumption_data_until"
+        self._attr_unique_id = f"{ean}_{suffix}"
+        self._attr_name = "Hodinová data dodávky k" if is_production else "Hodinová data spotřeby k"
         self._attr_device_info = _device_info(entry, ean)
 
     @property

@@ -396,6 +396,9 @@ class CezDistribuceApiClient:
         """GET/POST na AWS Gateway s automatickým obnovením MEPAS tokenu."""
         url = f"{AWS_API_GATEWAY_STATIC_URL}/{path}"
 
+        last_status: int | None = None
+        last_body: str = ""
+
         for attempt in range(LOGIN_RETRIES):
             if not self._mepas_access_token:
                 await self.login_mepas()
@@ -412,10 +415,19 @@ class CezDistribuceApiClient:
                         status = resp.status
 
             if status in (401, 403):
+                # DŮLEŽITÉ: uchováváme tělo odpovědi, protože 403 nemusí
+                # znamenat jen expirovaný token - AWS Gateway/appka Proud ho
+                # vrací i pro platný token, když daný partner/EAN vůbec
+                # nemá povolený/aktivovaný dálkový odečet (AMM) - to se bez
+                # zalogování těla odpovědi nedá odlišit od skutečně
+                # expirovaného tokenu (viz issue #24).
+                last_status, last_body = status, text
                 _LOGGER.debug(
-                    "MEPAS token zřejmě expiroval (HTTP %s), obnovuji... (pokus %d)",
+                    "MEPAS token zřejmě expiroval nebo přístup zamítnut (HTTP %s), "
+                    "obnovuji... (pokus %d): %s",
                     status,
                     attempt + 1,
+                    text[:300],
                 )
                 self._mepas_access_token = None
                 continue
@@ -430,7 +442,10 @@ class CezDistribuceApiClient:
                     f"Neplatná JSON odpověď z {url}: {text[:200]!r}"
                 ) from err
 
-        raise CezApiError(f"Nepodařilo se získat data z: {url} (MEPAS auth selhává opakovaně)")
+        detail = f" Poslední odpověď HTTP {last_status}: {last_body[:300]!r}" if last_status else ""
+        raise CezApiError(
+            f"Nepodařilo se získat data z: {url} (MEPAS auth selhává opakovaně).{detail}"
+        )
 
     # ------------------------------------------------------------------
     # Interní GET / POST s retry a obnovou tokenu (portál)
