@@ -121,6 +121,20 @@ class CezDistribuceApiClient:
             f"&scope={SCOPE}"
         )
         self._login_url = f"{CAS_BASE_URL}/login?service={urllib.parse.quote(self._service_url)}"
+        # POZOR (issue #24): tohle bylo omylem "/oidc/oidcAuthorize" od
+        # migrace na mepas.cez.cz (commit 9fee309) - ČEZ ale na tomhle
+        # hostu má jen "/oidc/authorize" (stejně jako funkční OIDC flow v
+        # login_mepas() níže), "oidcAuthorize" tam nikdy neexistovalo a
+        # trvale to vracelo HTTP 404. Bez efektu na přihlášení (odpověď se
+        # nikde nevyužívala), ale je to skutečná chyba, ne ČEZ změna.
+        self._authorize_url = (
+            f"{CAS_BASE_URL}/oidc/authorize"
+            f"?scope={SCOPE}"
+            f"&response_type={RESPONSE_TYPE}"
+            f"&redirect_uri={urllib.parse.quote(redirect_url)}"
+            f"&client_id={client_id}"
+        )
+
         # Sdílíme jeden aiohttp session, ale potřebujeme oddělit cookie jary
         self._auth_cookie_jar = aiohttp.CookieJar()
         self._anon_cookie_jar = aiohttp.CookieJar()
@@ -185,16 +199,11 @@ class CezDistribuceApiClient:
                 if "Nesprávné" in html or "incorrect" in html.lower():
                     raise CezAuthError("Nesprávné přihlašovací údaje.")
 
-            # POZN. (issue #24): tady býval GET na CAS OIDC authorize
-            # endpoint, který trvale vracel HTTP 404. Není to změna na
-            # straně ČEZ ani špatná cesta - portálový client_id je
-            # registrovaný jako CAS *OAuth2.0* klient (client_name=
-            # CasOAuthClient, service míří na /oauth2.0/callbackAuthorize),
-            # takže OIDC authorize ho po vytvoření SSO session nenajde.
-            # Odpověď se nikde nevyužívala (session drží cookies z kroku
-            # 2), takže krok je odstraněný - jen plodil zavádějící 404.
+            # Krok 3 – GET authorize URL
+            async with auth_session.get(self._authorize_url) as resp:
+                _LOGGER.debug("Authorize response: %s", resp.status)
 
-            # Krok 3 – načíst API token (autentizovaný)
+            # Krok 4 – načíst API token (autentizovaný)
             token_url = f"{self._base_url}/rest-auth-api?path=/token/get"
             async with auth_session.get(token_url) as resp:
                 data = await self._read_json_response(resp, token_url)
@@ -203,7 +212,7 @@ class CezDistribuceApiClient:
             # Uložit cookies pro pozdější použití
             self._auth_cookies = auth_session.cookie_jar
 
-        # Krok 4 – anonymní token (nový session bez přihlášení)
+        # Krok 5 – anonymní token (nový session bez přihlášení)
         async with aiohttp.ClientSession() as anon_session:
             token_url = f"{self._base_url}/anonymous/rest-auth-api?path=/token/get"
             async with anon_session.get(token_url) as resp:
