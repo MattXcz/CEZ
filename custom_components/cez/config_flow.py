@@ -128,6 +128,8 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Neočekávaná chyba při přihlašování")
                 errors["base"] = "cannot_connect"
 
+            _LOGGER.debug("DEBUG config_flow: supply points from API: %s", self._supply_points)
+
             if not errors:
                 if not self._supply_points:
                     errors["base"] = "no_supply_points"
@@ -254,6 +256,12 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_title = (
             f"{base_title} ({type_text})" if type_text and type_text != "Spotřeba" else base_title
         )
+        _LOGGER.debug(
+            "DEBUG config_flow: _select_point point=%s -> ean=%r uid=%r adresa=%r "
+            "base_title=%r type_text=%r selected_title=%r",
+            point, self._selected_ean, self._selected_uid, adresa,
+            base_title, type_text, self._selected_title,
+        )
 
     async def _async_create_entry(
         self,
@@ -262,6 +270,10 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         price_nt: float,
     ) -> FlowResult:
         """Vytvoří config entry."""
+        _LOGGER.debug(
+            "DEBUG config_flow: _async_create_entry title=%r ean=%r uid=%r hdo_signal=%r",
+            self._selected_title, self._selected_ean, self._selected_uid, hdo_signal,
+        )
         await self.async_set_unique_id(self._selected_ean)
         self._abort_if_unique_id_configured()
         return self.async_create_entry(
