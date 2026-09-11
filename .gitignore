@@ -190,3 +190,6 @@ __*
 SOURCE_EXAMPLE/
 Style guidelines.md
 TODO.md
+
+# Lokální drafty komentářů/PR - nikdy nepushovat do repa
+docs/drafts/
