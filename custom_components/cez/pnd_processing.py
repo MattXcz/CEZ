@@ -8,8 +8,44 @@ jaký běží v HA pluginu.
 """
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+
+def infer_interval_minutes(
+    raw_points: list[dict[str, Any]], fallback: int
+) -> int:
+    """Odvodí skutečný krok dat (v minutách) z časových značek odpovědi.
+
+    Nutné pro assemblyCode kódy, jejichž granularitu neznáme napevno
+    (issue #24 - výrobní/dodávkové EANy nabízejí jiné kódy než spotřeba
+    a jejich krok se dřív hádal podle PND_INTERVAL_MINUTES, což u
+    assemblyCode=02 vyšlo 4x špatně: skutečný krok byl 15 minut, ne 60).
+    Bere modus rozestupů mezi po sobě jdoucími "time" značkami - jeden
+    chybějící/duplicitní bod modus nerozhodne. Když je k dispozici méně
+    než dva body, vrací 'fallback' (nelze nic odvodit).
+    """
+    timestamps: list[datetime] = []
+    for entry in raw_points:
+        try:
+            timestamps.append(
+                datetime.strptime(entry["time"], "%Y-%m-%dT%H:%M:%S.%fZ")
+            )
+        except (KeyError, ValueError, TypeError):
+            continue
+    if len(timestamps) < 2:
+        return fallback
+
+    timestamps.sort()
+    deltas = [
+        round((b - a).total_seconds() / 60)
+        for a, b in zip(timestamps, timestamps[1:])
+    ]
+    deltas = [d for d in deltas if d > 0]
+    if not deltas:
+        return fallback
+    return Counter(deltas).most_common(1)[0][0]
 
 
 def parse_pnd_entries(
