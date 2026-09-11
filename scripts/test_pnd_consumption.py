@@ -65,7 +65,11 @@ from const import (  # noqa: E402
     PND_INTERVAL_MINUTES,
     PND_TRAILING_SAFETY_DAYS,
 )
-from pnd_processing import fetch_pnd_chunked, process_pnd_response  # noqa: E402
+from pnd_processing import (  # noqa: E402
+    fetch_pnd_chunked,
+    infer_interval_minutes,
+    process_pnd_response,
+)
 
 
 def _parse_iso(value: str) -> datetime:
@@ -277,6 +281,23 @@ async def main() -> int:
                 MAX_PND_INTERVAL_DAYS, on_chunk_error=_on_chunk_error,
             )
             print(f"   Staženo syrových záznamů: {len(raw_points)}, jednotka: {unit}")
+
+            # issue #24: interval_minutes výše je jen odhad podle assemblyCode
+            # (spolehlivý pro známé 03/05, u ostatních kódů - typicky
+            # výrobní/dodávkové EANy - jsme si ho jen domýšleli). Ověřeno
+            # živě: assemblyCode=02 (dodávka) vrací 15minutová data, ne
+            # hodinová, a domněnka "60min" by přepočet kW->kWh i hodinovou
+            # agregaci spočítala 4x špatně. Odvozujeme skutečný krok přímo
+            # z časových značek - u známých kódů to jen potvrdí odhad, u
+            # neznámých to je jediný spolehlivý zdroj.
+            detected_interval = infer_interval_minutes(raw_points, fallback=interval_minutes)
+            if detected_interval != interval_minutes:
+                print(
+                    f"   ⚠️  Krok dat podle časových značek je {detected_interval}min, "
+                    f"ne předpokládaných {interval_minutes}min - používám odvozenou "
+                    "hodnotu (issue #24)."
+                )
+                interval_minutes = detected_interval
 
             timestamp_tag = now.strftime("%Y%m%dT%H%M%S")
             json_path = outdir / f"pnd_raw_{timestamp_tag}.json"
