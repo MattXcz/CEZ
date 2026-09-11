@@ -31,12 +31,12 @@ from .const import (
     MAX_PND_INTERVAL_DAYS,
     OM_TYPE_CONSUMPTION,
     OM_TYPES_PRODUCTION,
-    PND_ASSEMBLY_CODE,
-    PND_INTERVAL_MINUTES,
+    PND_INTERVAL_MINUTES_BY_ASSEMBLY,
     PND_TRAILING_SAFETY_DAYS,
     UPDATE_INTERVAL_SECONDS,
+    pnd_assembly_code_for,
 )
-from .pnd_processing import fetch_pnd_chunked, process_pnd_response
+from .pnd_processing import fetch_pnd_chunked, infer_interval_minutes, process_pnd_response
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,6 +71,10 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # odběr z ní. HDO signály/tarify se jí netýkají a hodinová
         # statistika se pojmenovává jinak (viz issue #24).
         self._is_production = self._om_type in OM_TYPES_PRODUCTION
+        # Spotřeba a dodávka mají u MEPAS gateway oddělené assemblyCode
+        # řady (issue #24) - viz pnd_assembly_code_for()/const.py.
+        self._assembly_code = pnd_assembly_code_for(self._om_type)
+        self._assembly_interval_minutes = PND_INTERVAL_MINUTES_BY_ASSEMBLY[self._assembly_code]
 
         # Kdy se naposledy podařilo stáhnout úplně všechna data (bez fallbacku
         # na poslední známá data). Entity vypadají "živě" i při rozbitém
@@ -207,7 +211,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # rovnou jen nejnovější bod bez zpětného doplnění mezery), bez
             # tohohle by taková díra ve statistikách zůstala navždy.
             fetch_start = min(
-                last_known_start + timedelta(minutes=PND_INTERVAL_MINUTES),
+                last_known_start + timedelta(minutes=self._assembly_interval_minutes),
                 now - timedelta(days=PND_TRAILING_SAFETY_DAYS),
             )
         else:
@@ -263,7 +267,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._ean,
             fetch_start,
             now,
-            PND_ASSEMBLY_CODE,
+            self._assembly_code,
             MAX_PND_INTERVAL_DAYS,
             on_chunk_error=_log_chunk_error,
         )
@@ -286,8 +290,29 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
             return
 
+        # Bezpečnostní pojistka (issue #24): krok dat odvozujeme přímo
+        # z časových značek odpovědi, ne jen z assemblyCode - u kódu
+        # PND_ASSEMBLY_HOURLY_PRODUCTION ("06", dodávka) máme zatím jen
+        # jeden ověřený reálný účet, a stejná chyba (špatný předpoklad
+        # intervalu -> 4x špatný přepočet kW/kWh) se dřív skryla i v
+        # diagnostickém skriptu. Pro známý spotřební kód "05" se odvozená
+        # hodnota vždy shoduje, takže tady nic neměníme.
+        interval_minutes = infer_interval_minutes(
+            raw_points, fallback=self._assembly_interval_minutes
+        )
+        if interval_minutes != self._assembly_interval_minutes:
+            _LOGGER.warning(
+                "pnd/data pro %s (assemblyCode=%s): krok dat podle časových "
+                "značek je %d min, ne předpokládaných %d min - používám "
+                "odvozenou hodnotu (issue #24).",
+                self._ean,
+                self._assembly_code,
+                interval_minutes,
+                self._assembly_interval_minutes,
+            )
+
         hourly_buckets, trimmed = process_pnd_response(
-            raw_points, unit, PND_INTERVAL_MINUTES, fetch_start, now
+            raw_points, unit, interval_minutes, fetch_start, now
         )
         if trimmed:
             _LOGGER.debug(
