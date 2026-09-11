@@ -53,6 +53,13 @@ CEZ_DISTRIBUCE_BASE_URL = "https://dip.cezdistribuce.cz/irj/portal"
 
 LOGIN_RETRIES = 2
 
+# Bez explicitního timeoutu se aiohttp spoléhá na svůj default (300 s) - pokud
+# portál na request nikdy neodpoví, celý config flow / update se na několik
+# minut zasekne, aniž by to bylo v logu vidět jako chyba. Krátký timeout tohle
+# převede na rychlé, viditelné selhání (odchytává ho volající přes
+# `except Exception`).
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
 
 class CezAuthError(Exception):
     """Chyba přihlášení."""
@@ -170,6 +177,7 @@ class CezDistribuceApiClient:
             connector=connector,
             max_line_size=8190 * 4,
             max_field_size=8190 * 4,
+            timeout=REQUEST_TIMEOUT,
         ) as auth_session:
             auth_session._cookie_jar = self._auth_cookie_jar  # noqa: SLF001
 
@@ -231,7 +239,7 @@ class CezDistribuceApiClient:
             self._auth_cookies = auth_session.cookie_jar
 
         # Krok 4 – anonymní token (nový session bez přihlášení)
-        async with aiohttp.ClientSession() as anon_session:
+        async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as anon_session:
             token_url = f"{self._base_url}/anonymous/rest-auth-api?path=/token/get"
             async with anon_session.get(token_url) as resp:
                 data = await self._read_json_response(resp, token_url)
@@ -277,7 +285,9 @@ class CezDistribuceApiClient:
             f"&scope={MEPAS_SCOPE}"
         )
 
-        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar()) as s:
+        async with aiohttp.ClientSession(
+            cookie_jar=aiohttp.CookieJar(), timeout=REQUEST_TIMEOUT
+        ) as s:
             async with s.get(authorize_url, allow_redirects=False) as resp:
                 if resp.status not in (301, 302, 303, 307, 308):
                     raise CezAuthError(
@@ -404,7 +414,7 @@ class CezDistribuceApiClient:
                 await self.login_mepas()
 
             headers = self._mepas_headers(is_post=(method == "POST"))
-            async with aiohttp.ClientSession() as s:
+            async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as s:
                 if method == "GET":
                     async with s.get(url, headers=headers) as resp:
                         text = await resp.text()
@@ -492,7 +502,7 @@ class CezDistribuceApiClient:
             cookies = self._auth_cookies if authenticated else self._anon_cookies
 
             try:
-                async with aiohttp.ClientSession(cookie_jar=cookies) as s:
+                async with aiohttp.ClientSession(cookie_jar=cookies, timeout=REQUEST_TIMEOUT) as s:
                     if method == "GET":
                         async with s.get(url, headers=headers) as resp:
                             raw = await self._read_json_response(resp, url)
