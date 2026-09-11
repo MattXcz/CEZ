@@ -88,14 +88,45 @@ APP_BUILD_NUMBER = "447"
 PND_ASSEMBLY_HOURLY = "05"
 PND_ASSEMBLY_15MIN = "03"
 
-# Aktivní volba - změň na PND_ASSEMBLY_15MIN, pokud by HA v budoucnu
-# umožnilo import externích statistik s kratším intervalem než hodina.
+# Aktivní volba pro spotřebu - změň na PND_ASSEMBLY_15MIN, pokud by HA
+# v budoucnu umožnilo import externích statistik s kratším intervalem
+# než hodina.
 PND_ASSEMBLY_CODE = PND_ASSEMBLY_HOURLY
 
-PND_INTERVAL_MINUTES = {
+# Dodávka do sítě (výroba/mikrozdroj, typ V/M) - MEPAS gateway pro ni
+# nabízí samostatnou, SUDOU sadu assemblyCode, zjevně jako protějšek
+# liché sady u spotřeby výše (issue #24, ověřeno živě na reálném účtu
+# s mikrozdrojem, pnd/status vrátil pro spotřebu 01/03/05/07/09/11 a pro
+# dodávku na stejném partnerovi 02/04/06/08/10/12). "06" vrací přímo
+# hodinovou energii v kWh (jednotka "kWh", 48 záznamů za 48h okno) -
+# stejný vzor jako "05" u spotřeby, a číselně sedí na "02" (15minutový
+# výkon v kW) po přepočtu na kWh - křížová kontrola stejná jako u "03"
+# vs "05". Použití "05" pro výrobní EAN vrací HTTP 400 (odtud issue #24
+# "Nemam eventu" pro mikrozdrojový OM).
+PND_ASSEMBLY_HOURLY_PRODUCTION = "06"
+
+# Mapování na skutečný krok dat v minutách - používá ho i
+# pnd_processing.infer_interval_minutes() jako fallback, kdyby se krok
+# nepodařilo odvodit z dat samotných.
+PND_INTERVAL_MINUTES_BY_ASSEMBLY = {
     PND_ASSEMBLY_HOURLY: 60,
     PND_ASSEMBLY_15MIN: 15,
-}[PND_ASSEMBLY_CODE]
+    PND_ASSEMBLY_HOURLY_PRODUCTION: 60,
+}
+PND_INTERVAL_MINUTES = PND_INTERVAL_MINUTES_BY_ASSEMBLY[PND_ASSEMBLY_CODE]
+
+
+def pnd_assembly_code_for(om_type: str) -> str:
+    """Vrátí správný assemblyCode pro pnd/data podle typu odběrného místa.
+
+    Spotřeba (typ "S") a dodávka do sítě (typ "V"/"M") mají u MEPAS
+    gateway oddělené číselné řady - viz komentář u
+    PND_ASSEMBLY_HOURLY_PRODUCTION (issue #24)."""
+    return (
+        PND_ASSEMBLY_HOURLY_PRODUCTION
+        if om_type in OM_TYPES_PRODUCTION
+        else PND_ASSEMBLY_CODE
+    )
 
 # DŮLEŽITÉ: časové razítko "time" v odpovědi pnd/data označuje KONEC
 # intervalu, ne začátek (ověřeno křížovou kontrolou). Při importu do HA
