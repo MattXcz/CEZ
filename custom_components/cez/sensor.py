@@ -17,6 +17,7 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_EAN,
@@ -38,6 +39,26 @@ from .const import (
 from .coordinator import CezDistribuceCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _local_now() -> datetime:
+    """Aktuální čas jako naivní datetime v ČASOVÉ ZÓNĚ NASTAVENÉ V HA.
+
+    NIKDY nepoužívat holé `datetime.now()`/`date.today()` pro HDO výpočty
+    (issue #26) - ty berou timezone systému, na kterém HA běží, což je u
+    kontejnerových instalací (Docker) běžně UTC bez ohledu na to, že HA
+    samo je správně nastavené na Europe/Prague. ČEZ vrací HDO intervaly
+    ("casy") jako lokální wall-clock čas (CET/CEST) bez timezone info, a
+    veškerá aritmetika níž (kombinování s `date`, přičítání minut) počítá
+    s naivními datetime - `dt_util.now()` proto zbavujeme tzinfo, ať dál
+    zůstane konzistentně naivní, jen se správnou lokální hodnotou.
+    """
+    return dt_util.now().replace(tzinfo=None)
+
+
+def _local_today() -> date:
+    """Dnešní datum v ČASOVÉ ZÓNĚ NASTAVENÉ V HA - viz `_local_now()`."""
+    return _local_now().date()
 
 
 async def async_setup_entry(
@@ -195,7 +216,7 @@ class CezHdoStateSensor(CezTimeAwareSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        now = datetime.now()
+        now = _local_now()
         intervals = _get_todays_intervals(self.coordinator.data, self._hdo_signal) or []
         current_state = _state_for_minute(intervals, now.hour * 60 + now.minute)
 
@@ -244,7 +265,7 @@ class CezHdoScheduleSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEn
         formatted_intervals = _format_nt_intervals(intervals)
         return {
             "hdo_signal": self._hdo_signal,
-            "datum": date.today().strftime("%d.%m.%Y"),
+            "datum": _local_today().strftime("%d.%m.%Y"),
             "pocet_intervalu": len(formatted_intervals),
             "intervaly": formatted_intervals,
             "nt_celkem_minut": sum(end - start for start, end in normalized_intervals),
@@ -587,7 +608,7 @@ def _get_todays_intervals(
     if not signal_list:
         return None
 
-    today_str = date.today().strftime("%d.%m.%Y")
+    today_str = _local_today().strftime("%d.%m.%Y")
 
     for entry in signal_list:
         if entry.get("datum") != today_str:
@@ -635,7 +656,7 @@ def _get_nt_windows_around_now(data: dict | None, hdo_signal: str) -> list[tuple
     if not signal_list:
         return None
 
-    today = date.today()
+    today = _local_today()
     relevant_dates = {today - timedelta(days=1), today, today + timedelta(days=1)}
     windows: list[tuple[datetime, datetime]] = []
 
@@ -670,7 +691,7 @@ def _parse_signal_date(raw: Any) -> date | None:
 
 
 def _current_hdo_state_from_windows(windows: list[tuple[datetime, datetime]]) -> str:
-    now = datetime.now()
+    now = _local_now()
     return HDO_STATE_NT if _current_nt_window(windows, now) else HDO_STATE_VT
 
 
@@ -700,7 +721,7 @@ def _next_nt_window(
 
 
 def _current_minute() -> int:
-    now = datetime.now()
+    now = _local_now()
     return now.hour * 60 + now.minute
 
 
