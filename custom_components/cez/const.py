@@ -105,6 +105,18 @@ PND_ASSEMBLY_CODE = PND_ASSEMBLY_HOURLY
 # "Nemam eventu" pro mikrozdrojový OM).
 PND_ASSEMBLY_HOURLY_PRODUCTION = "06"
 
+# Issue #30: historie odečtů z portálu (get_readings, stavVt/stavNt)
+# vrací i pro výrobní/mikrozdrojový EAN registry ODBĚRU (+E VT/NT) téhož
+# elektroměru - hodnoty do kWh shodné se spotřebním EAN (tři nezávislé
+# účty). Registr dodávky (-E) portál v odečtech nemá; je vidět jen na
+# Portálu naměřených dat jako denní stav registru. Entita "Celková
+# dodávka do sítě" se proto počítá jako kumulativní součet hodinové
+# dodávky z "06" (viz coordinator.pnd_total_kwh). Který ze zbývajících
+# sudých kódů (02/04/08/10/12) vrací přímo stav registru -E, zatím
+# ověřené není - scripts/test_pnd_consumption.py umí zadat víc kódů
+# najednou (--assembly 02,04,08,10,12), aby to šlo z reálného účtu
+# rychle zjistit.
+
 # Mapování na skutečný krok dat v minutách - používá ho i
 # pnd_processing.infer_interval_minutes() jako fallback, kdyby se krok
 # nepodařilo odvodit z dat samotných.

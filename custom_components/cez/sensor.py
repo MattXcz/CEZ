@@ -13,6 +13,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
@@ -77,8 +78,6 @@ async def async_setup_entry(
     is_production = om_type in OM_TYPES_PRODUCTION
 
     entities: list[SensorEntity] = [
-        CezReadingSensor(coordinator, entry, ean, "VT"),
-        CezReadingSensor(coordinator, entry, ean, "NT"),
         CezLastSuccessfulUpdateSensor(coordinator, entry, ean),
         CezConsumptionFreshnessSensor(coordinator, entry, ean, is_production),
     ]
@@ -87,10 +86,20 @@ async def async_setup_entry(
         # Výroba/mikrozdroj (FVE) - dodávka aktivní energie DO sítě. HDO
         # spínání a cenové tarify se jí netýkají, žádný takový senzor tu
         # proto není (viz README a issue #24).
+        #
+        # Senzory "Stav elektroměru VT/NT" tu záměrně NEJSOU (issue #30):
+        # historie odečtů vrací pro výrobní EAN registry ODBĚRU téhož
+        # elektroměru (+E VT/NT) - přesně ty hodnoty, co má spotřební
+        # config entry. Verze 2.0.7 je vytvářela (a z nich chybně sčítala
+        # "Celkovou dodávku do sítě"), proto se tu po nich uklidí registr
+        # entit, aby nezůstaly viset jako "nedostupné".
+        _remove_stale_production_reading_entities(hass, ean)
         entities.append(CezTotalProductionSensor(coordinator, entry, ean))
     else:
         entities.extend(
             [
+                CezReadingSensor(coordinator, entry, ean, "VT"),
+                CezReadingSensor(coordinator, entry, ean, "NT"),
                 CezHdoStateSensor(coordinator, entry, ean, hdo_signal),
                 CezHdoScheduleSensor(coordinator, entry, ean, hdo_signal),
                 CezTariffBoundarySensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT, "start"),
@@ -105,6 +114,23 @@ async def async_setup_entry(
         )
 
     async_add_entities(entities)
+
+
+def _remove_stale_production_reading_entities(hass: HomeAssistant, ean: str) -> None:
+    """Odstraní z registru entity odečtů VT/NT založené verzí 2.0.7 u
+    výrobního/mikrozdrojového EAN (issue #30 - duplikovaly registry
+    odběru ze spotřebního EAN). U čisté instalace 2.0.8+ nic nenajde."""
+    registry = er.async_get(hass)
+    for tariff in ("vt", "nt"):
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{ean}_reading_{tariff}")
+        if entity_id:
+            _LOGGER.info(
+                "Odstraňuji entitu %s - odečty VT/NT u výrobního EAN %s jsou "
+                "registry odběru, ne dodávky (issue #30).",
+                entity_id,
+                ean,
+            )
+            registry.async_remove(entity_id)
 
 
 class CezTimeAwareSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
@@ -450,16 +476,26 @@ class CezTotalConsumptionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sen
 
 class CezTotalProductionSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
     """Celková dodávka (přetok) aktivní energie do sítě - odběrné místo
-    typu výroba/mikrozdroj (FVE apod.), součet VT a NT z posledního odečtu.
+    typu výroba/mikrozdroj (FVE apod.).
 
-    Stejné API volání (get_readings) jako u běžné spotřeby - ČEZ podle
-    všeho nemodeluje dodávku jako extra pole odečtu, ale jako samostatné
-    odběrné místo (jiný EAN, typ "V"/"M") se stejnou strukturou dat, jen
-    s opačným významem (viz README, issue #24)."""
+    Zdrojem je součet hodinové dodávky z pnd/data (assemblyCode 06 -
+    stejná data, která jdou do dlouhodobé statistiky
+    "cez:<ean>_production"), NE historie odečtů. Ta totiž pro výrobní
+    EAN vrací registry ODBĚRU téhož elektroměru (+E VT/NT) - verze
+    2.0.7 je sčítala a "dodávka" tak byla do kWh shodná se spotřebou
+    (issue #30, potvrzeno třemi nezávislými účty). Registr dodávky (-E)
+    portál v odečtech nemá vůbec.
+
+    Hodnota je tedy součet od nejstarší dohledané hodiny (integrace při
+    prvním spuštění zkouší až MAX_BACKFILL_YEARS let zpátky), ne stav
+    registru elektroměru od jeho instalace - odkdy platí, říká atribut
+    'od'. Pro Energy dashboard je vhodnější přímo statistika
+    "cez:<ean>_production" (viz README)."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 2
     _attr_icon = "mdi:transmission-tower-export"
     _attr_has_entity_name = True
 
@@ -477,27 +513,21 @@ class CezTotalProductionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sens
 
     @property
     def native_value(self) -> float | None:
-        """Součet posledních odečtů VT a NT v kWh."""
-        latest = _latest_reading(self.coordinator.data)
-        if latest is None:
+        """Kumulativní součet hodinové dodávky (kWh) naimportované do statistik."""
+        total = self.coordinator.pnd_total_kwh
+        if total is None:
             return None
-
-        vt = _reading_value(latest, "stavVt")
-        nt = _reading_value(latest, "stavNt")
-        if vt is None and nt is None:
-            return None
-        return (vt or 0.0) + (nt or 0.0)
+        return round(total, 3)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        latest = _latest_reading(self.coordinator.data)
-        if latest is None:
-            return {}
+        first = self.coordinator.pnd_first_timestamp
+        last = self.coordinator.last_pnd_timestamp
         return {
-            "dodavka_vt": _reading_value(latest, "stavVt"),
-            "dodavka_nt": _reading_value(latest, "stavNt"),
-            "datum_odectu": latest.get("datumOdectu", "").split("T")[0],
-            "cas_odectu": latest.get("casOdectu"),
+            "od": first.isoformat() if first else None,
+            "do": last.isoformat() if last else None,
+            "zdroj": "pnd/data (hodinová dodávka, assemblyCode 06) - součet od 'od'",
+            "statistic_id": self.coordinator.statistic_id,
         }
 
 

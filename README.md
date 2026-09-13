@@ -52,7 +52,7 @@ Zkopírujte složku `custom_components/cez` do adresáře `config/custom_compone
 | `binary_sensor.porucha_odstavka` | Binary senzor | Hlášená porucha nebo plánovaná odstávka |
 | `sensor.hodinova_data_spotreby_k` | Senzor (diagnostický) | Konec poslední hodiny hodinové spotřeby naimportované do statistik (viz níže) |
 
-Pokud přidáte odběrné místo typu **Výroba/Mikrozdroj** (FVE, `typ` `V`/`M` z `get_supply_points` – viz níže), entity se liší: HDO/tarifové senzory se nevytváří (netýkají se dodávky do sítě) a místo `sensor.celkova_spotreba` se vytvoří `sensor.celkova_dodavka_do_site`.
+Pokud přidáte odběrné místo typu **Výroba/Mikrozdroj** (FVE, `typ` `V`/`M` z `get_supply_points` – viz níže), entity se liší: HDO/tarifové senzory ani `sensor.spotreba_vt`/`sensor.spotreba_nt` se nevytváří (netýkají se dodávky do sítě – odečty u výrobního EAN jsou registry odběru, viz issue #30) a místo `sensor.celkova_spotreba` se vytvoří `sensor.celkova_dodavka_do_site` (+ diagnostická `sensor.hodinova_data_dodavky_k`).
 
 ## Hodinová spotřeba (beta)
 
@@ -123,11 +123,16 @@ Integrace nově správně slučuje navazující NT intervaly přes půlnoc (nap�
 
 ### Celková dodávka (přetok) do sítě – výroba/mikrozdroj
 
-Pokud máte FVE/mikrozdroj, ČEZ nemodeluje dodávku jako extra pole v odečtu – dodávka/přetok vede přes samostatné odběrné místo (jiný EAN, `typ` `V` Výroba nebo `M` Mikrozdroj v `get_supply_points`), se stejnou strukturou odečtů (`stavVt`/`stavNt`) jako běžná spotřeba, jen s opačným významem.
+Pokud máte FVE/mikrozdroj, dodávka/přetok vede přes samostatné odběrné místo (jiný EAN, `typ` `V` Výroba nebo `M` Mikrozdroj v `get_supply_points`). Při nastavení znovu spusťte průvodce (**Nastavení → Zařízení a služby → ČEZ → Přidat zařízení**) a vyberte to druhé odběrné místo (typ Výroba/Mikrozdroj). Založí se samostatná config entry bez HDO/tarifových senzorů, se senzorem `sensor.celkova_dodavka_do_site` a hodinovou statistikou `cez:<ean>_production` (analogicky k `_consumption`).
 
-Integrace to teď rozpozná automaticky: při nastavení znovu spusťte průvodce (**Nastavení → Zařízení a služby → ČEZ → Přidat zařízení**) a tentokrát vyberte to druhé odběrné místo (typ Výroba/Mikrozdroj). Založí se samostatná config entry bez HDO/tarifových senzorů, se senzorem `sensor.celkova_dodavka_do_site` a hodinovou statistikou `cez:<ean>_production` (analogicky k `_consumption`).
+**Odkud se dodávka bere (issue #30).** Historie odečtů z portálu (`meter-reading-history`, pole `stavVt`/`stavNt`) vrací i pro výrobní EAN registry **odběru** téhož elektroměru (+E VT/NT) – tedy přesně ta čísla, co má spotřební EAN. Registr dodávky (−E) v ní portál vůbec nemá, je vidět jen na Portálu naměřených dat jako denní stav registru. Verze 2.0.7 z těchto odečtů „dodávku“ sčítala, proto byla do kWh shodná s celkovou spotřebou. Od 2.0.8 je `sensor.celkova_dodavka_do_site` **kumulativní součet hodinové dodávky z `pnd/data`** (assemblyCode `06`, stejná data jako ve statistice `cez:<ean>_production`):
 
-Tohle je zatím založené na struktuře `get_supply_points` (pole `typ`/`typText`), ne na reálně ověřených datech `get_readings`/`pnd/data` pro výrobní OM – pokud vám čísla nebo chování nesedí, přiložte anonymizovaný výstup `scripts/dump_readings.py` spuštěný na EAN výrobního odběrného místa do issue.
+- hodnota roste od nejstarší hodiny, kterou se podařilo dohledat (při prvním spuštění až 3 roky zpátky, podle toho, odkdy máte chytrý elektroměr) – **není to stav registru −E od instalace elektroměru**, takže se od čísla na Portálu naměřených dat liší o dodávku před začátkem dohledané historie;
+- odkdy a dokdy součet platí, ukazují atributy `od` a `do`; `statistic_id` odkazuje na příslušnou statistiku;
+- do **Energy dashboardu** přidejte raději přímo statistiku `cez:<ean>_production` (jako „Vrácení do sítě“) – má plnou hodinovou historii;
+- entita je `unknown`, dokud se hodinová dodávka nenaimportuje (chytrý elektroměr + dohledané `partner`/`anlage`, viz výše); pokud zůstane `unknown` trvale, podívejte se na diagnostickou entitu „Hodinová data dodávky k“ a do logu.
+
+Pokud víte, který `assemblyCode` vrací přímo stav registru −E (aby entita mohla ukazovat totéž číslo jako Portál naměřených dat), pomůže výstup `scripts/test_pnd_consumption.py --ean <výrobní EAN> --assembly 02,04,06,08,10,12` – skript stáhne všechny kódy najednou a vypíše srovnávací tabulku (jednotka, krok, první/poslední hodnota, součet). Anonymizovaný výstup prosím přiložte k issue #30.
 
 **Hodinová dodávka (`pnd/data`) pro výrobní/mikrozdrojové EAN.** MEPAS gateway pro ně nabízí samostatnou, SUDOU sadu `assemblyCode` (`02`, `04`, `06`, `08`, `10`, `12`) jako protějšek liché sady u spotřeby (`01`, `03`, `05`, `07`, `09`, `11`) na stejném partnerovi – seznam pro váš účet zjistíte přes `scripts/test_pnd_consumption.py --status`. Kód `05` (spotřeba) u výrobního EAN vrací HTTP 400. Živě ověřeno (issue #24): integrace pro ně teď používá `06`, který vrací přímo hodinovou energii v kWh – stejný vzor jako `05` u spotřeby, číselně potvrzený křížovou kontrolou proti `02` (15minutový výkon v kW, obdoba `03`).
 
