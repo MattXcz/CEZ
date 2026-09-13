@@ -90,6 +90,20 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # vůbec nemá - viz __init__.py).
         self.last_pnd_timestamp: datetime | None = None
 
+        # Kumulativní součet (kWh) hodinových dat naimportovaných do
+        # dlouhodobé statistiky - tj. poslední hodnota 'sum' statistiky
+        # "{DOMAIN}:<ean>_consumption/_production". U výroby/mikrozdroje
+        # je to JEDINÝ použitelný zdroj pro entitu "Celková dodávka do
+        # sítě" (issue #30): historie odečtů (get_readings) vrací i pro
+        # výrobní EAN registry ODBĚRU (+E VT/NT, stejný fyzický
+        # elektroměr), registr dodávky (-E) v ní portál vůbec nemá.
+        # Počítá se od nejstarší hodiny, kterou se podařilo dohledat (viz
+        # MAX_BACKFILL_YEARS), ne od instalace elektroměru - proto se
+        # vedle toho drží i 'pnd_first_timestamp', aby entita uměla říct,
+        # od kdy součet platí. None dokud statistika neexistuje.
+        self.pnd_total_kwh: float | None = None
+        self.pnd_first_timestamp: datetime | None = None
+
         super().__init__(
             hass,
             _LOGGER,
@@ -139,11 +153,15 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise UpdateFailed(f"Neočekávaná chyba: {err}") from err
 
         try:
-            await _load_dataset(DATA_READINGS, lambda: self._client.get_readings(self._uid))
             if not self._is_production:
-                # HDO spínací signály existují jen pro odběrná místa běžné
-                # spotřeby - u výroby/mikrozdroje by šlo jen o zbytečné
-                # volání API navíc bez užitku.
+                # Historie odečtů (stavVt/stavNt) a HDO spínací signály
+                # dávají smysl jen u odběrného místa běžné spotřeby. U
+                # výroby/mikrozdroje vrací get_readings registry ODBĚRU
+                # téhož elektroměru (issue #30 - tři nezávislé účty,
+                # hodnoty do kWh shodné se spotřebním EAN), takže by šlo
+                # jen o zbytečné volání API a zavádějící entity; HDO
+                # signály výrobní OM nemá vůbec.
+                await _load_dataset(DATA_READINGS, lambda: self._client.get_readings(self._uid))
                 await _load_dataset(DATA_SIGNALS, lambda: self._client.get_signals(self._ean))
             await _load_dataset(DATA_OUTAGES, lambda: self._client.get_outages(self._ean))
         except UpdateFailed:
@@ -184,6 +202,12 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # vodoměru.
     # ------------------------------------------------------------------
 
+    @property
+    def statistic_id(self) -> str:
+        """ID dlouhodobé statistiky hodinových dat tohoto odběrného místa
+        ("cez:<ean>_consumption" / "cez:<ean>_production")."""
+        return self._statistic_id()
+
     def _statistic_id(self) -> str:
         # DŮLEŽITÉ: statistic_id smí obsahovat jen [a-z0-9_] za dvojtečkou.
         safe_id = re.sub(r"[^a-z0-9_]", "_", self._ean.lower())
@@ -205,6 +229,15 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # 'start' z get_last_statistics je epoch sekundy (float).
             last_known_start = datetime.fromtimestamp(row["start"], tz=timezone.utc)
             self.last_pnd_timestamp = last_known_start + timedelta(hours=1)
+            # Kumulativní součet z DB hned po startu (a v cyklech, kdy
+            # nepřijde nic nového) - entita "Celková dodávka do sítě"
+            # nemá čekat na první nový hodinový bod (issue #30).
+            if row.get("sum") is not None:
+                self.pnd_total_kwh = float(row["sum"])
+            if self.pnd_first_timestamp is None:
+                self.pnd_first_timestamp = await self._async_find_first_statistic_start(
+                    recorder, statistic_id, now
+                )
             # Vždy se ohlédneme aspoň PND_TRAILING_SAFETY_DAYS zpátky, ne
             # jen od posledního naimportovaného bodu dál - ČEZ občas
             # doplňuje historii nespolehlivě (den vrátí prázdno, další den
@@ -375,3 +408,73 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # stav HA databáze), ne tahle proměnná - tahle je jen pro zobrazení.
         async_add_external_statistics(self.hass, metadata, statistics)
         self.last_pnd_timestamp = newest_hour_start + timedelta(hours=1)
+        self.pnd_total_kwh = running_sum
+        oldest_hour_start = min(hourly_buckets)
+        if self.pnd_first_timestamp is None or oldest_hour_start < self.pnd_first_timestamp:
+            self.pnd_first_timestamp = oldest_hour_start
+
+    async def _async_find_first_statistic_start(
+        self, recorder: Any, statistic_id: str, now: datetime
+    ) -> datetime | None:
+        """Začátek nejstarší hodiny uložené ve statistice (nebo None).
+
+        Recorder nemá "první řádek" dotaz, a hodinových řádků za až
+        MAX_BACKFILL_YEARS let jsou desítky tisíc - proto dvoukrokově:
+        nejdřív měsíční agregace (pár desítek řádků), pak hodinové řádky
+        jen v nalezeném prvním měsíci. Volá se jednou po startu, výsledek
+        se drží v 'pnd_first_timestamp'. Slouží jen jako informace pro
+        atribut entity (od kdy platí kumulativní součet dodávky, issue
+        #30) - selhání se zaloguje a nic dalšího neovlivní."""
+        search_start = now - timedelta(days=365 * MAX_BACKFILL_YEARS + 31)
+        try:
+            monthly = await recorder.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                search_start,
+                None,
+                {statistic_id},
+                "month",
+                None,
+                {"sum"},
+            )
+            month_rows = monthly.get(statistic_id) if monthly else None
+            if not month_rows:
+                return None
+            month_start = _stat_row_start(month_rows[0])
+            if month_start is None:
+                return None
+            hourly = await recorder.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                month_start,
+                month_start + timedelta(days=32),
+                {statistic_id},
+                "hour",
+                None,
+                {"sum"},
+            )
+            hour_rows = hourly.get(statistic_id) if hourly else None
+            if not hour_rows:
+                return month_start
+            return _stat_row_start(hour_rows[0]) or month_start
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "Nepodařilo se zjistit začátek statistiky %s (%s) - atribut "
+                "'od' u kumulativního součtu zůstane prázdný.",
+                statistic_id,
+                err,
+            )
+            return None
+
+
+def _stat_row_start(row: dict[str, Any]) -> datetime | None:
+    """'start' řádku statistiky jako tz-aware UTC datetime.
+
+    statistics_during_period vrací 'start' v novějších verzích HA jako
+    epoch sekundy (float), ve starších jako datetime - bereme obojí."""
+    start = row.get("start")
+    if isinstance(start, datetime):
+        return start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+    if isinstance(start, (int, float)):
+        return datetime.fromtimestamp(start, tz=timezone.utc)
+    return None

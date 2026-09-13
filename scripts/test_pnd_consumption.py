@@ -24,6 +24,12 @@ Použití:
   # Konkrétní odběrné místo a assemblyCode
   python3 scripts/test_pnd_consumption.py --ean 859182400708532693 --assembly 03
 
+  # Víc kódů najednou (issue #30 - hledáme, který sudý kód vrací stav
+  # registru dodávky -E u výrobního/mikrozdrojového EAN; každý kód
+  # dostane vlastní JSON/CSV a souhrn: jednotka, krok, první/poslední
+  # hodnota, součet)
+  python3 scripts/test_pnd_consumption.py --ean <vyrobni EAN> --assembly 02,04,06,08,10,12
+
   # Ruční zadání období (ISO8601, UTC)
   python3 scripts/test_pnd_consumption.py --from 2026-08-01T00:00:00 --to 2026-08-10T00:00:00
 
@@ -136,6 +142,154 @@ def write_csv(path: Path, hourly_buckets: dict[datetime, float]) -> None:
             writer.writerow([hour_start.isoformat(), f"{hourly_buckets[hour_start]:.4f}"])
 
 
+def _assumed_interval_minutes(assembly_code: str) -> int:
+    """Předpokládaný krok dat pro daný assemblyCode - jen odhad, skutečný
+    krok se vždy odvozuje z časových značek odpovědi (issue #24)."""
+    if assembly_code == PND_ASSEMBLY_15MIN:
+        return 15
+    return PND_INTERVAL_MINUTES
+
+
+async def run_assembly_code(
+    client: CezDistribuceApiClient,
+    partner: str,
+    ean: str,
+    assembly_code: str,
+    fetch_start: datetime,
+    fetch_end: datetime,
+    now: datetime,
+    outdir: Path,
+    timestamp_tag: str,
+    *,
+    show_raw: bool,
+) -> dict:
+    """Stáhne a vyhodnotí jeden assemblyCode (kroky 3 a 4), uloží JSON+CSV
+    a vrátí souhrn pro závěrečnou tabulku (issue #30 - porovnání víc kódů
+    u výrobního EAN, kde hledáme stav registru dodávky -E)."""
+    interval_minutes = _assumed_interval_minutes(assembly_code)
+    summary: dict = {
+        "assembly": assembly_code,
+        "records": 0,
+        "unit": None,
+        "interval": None,
+        "first": None,
+        "last": None,
+        "hourly_points": 0,
+        "total_kwh": None,
+        "error": None,
+    }
+
+    print(
+        f"\n3. Stahuji pnd/data (assemblyCode={assembly_code}, "
+        f"předpokládaný interval={interval_minutes}min): {fetch_start.isoformat()} .. {fetch_end.isoformat()}"
+    )
+
+    errors: list[str] = []
+
+    def _on_chunk_error(chunk_start, chunk_end, err):
+        errors.append(str(err))
+        print(f"   [chyba] okno {chunk_start} .. {chunk_end} selhalo: {err}", file=sys.stderr)
+
+    raw_points, unit = await fetch_pnd_chunked(
+        client, partner, ean, fetch_start, fetch_end, assembly_code,
+        MAX_PND_INTERVAL_DAYS, on_chunk_error=_on_chunk_error,
+    )
+    print(f"   Staženo syrových záznamů: {len(raw_points)}, jednotka: {unit}")
+    summary["records"] = len(raw_points)
+    summary["unit"] = unit
+    if errors:
+        summary["error"] = errors[-1]
+
+    json_path = outdir / f"pnd_raw_{assembly_code}_{timestamp_tag}.json"
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(raw_points, f, ensure_ascii=False, indent=2)
+    print(f"   Syrová data uložena do: {json_path}")
+
+    if show_raw:
+        dump_raw(f"pnd_data (syrová, assemblyCode={assembly_code})", raw_points)
+
+    if not raw_points:
+        return summary
+
+    # issue #24: interval_minutes výše je jen odhad podle assemblyCode
+    # (spolehlivý pro známé 03/05, u ostatních kódů - typicky
+    # výrobní/dodávkové EANy - jsme si ho jen domýšleli). Ověřeno
+    # živě: assemblyCode=02 (dodávka) vrací 15minutová data, ne
+    # hodinová, a domněnka "60min" by přepočet kW->kWh i hodinovou
+    # agregaci spočítala 4x špatně. Odvozujeme skutečný krok přímo
+    # z časových značek - u známých kódů to jen potvrdí odhad, u
+    # neznámých to je jediný spolehlivý zdroj.
+    detected_interval = infer_interval_minutes(raw_points, fallback=interval_minutes)
+    if detected_interval != interval_minutes:
+        print(
+            f"   ⚠️  Krok dat podle časových značek je {detected_interval}min, "
+            f"ne předpokládaných {interval_minutes}min - používám odvozenou "
+            "hodnotu (issue #24)."
+        )
+        interval_minutes = detected_interval
+    summary["interval"] = interval_minutes
+
+    # První/poslední syrová hodnota - u kódu, který vrací STAV REGISTRU
+    # (kumulativní kWh, řádově tisíce a monotónně rostoucí), to je vidět
+    # okamžitě, zatímco hodinová energie/výkon skáče kolem nuly až
+    # jednotek (issue #30).
+    ordered = sorted(
+        (e for e in raw_points if "time" in e and "value" in e),
+        key=lambda e: e["time"],
+    )
+    if ordered:
+        summary["first"] = (ordered[0]["time"], ordered[0]["value"])
+        summary["last"] = (ordered[-1]["time"], ordered[-1]["value"])
+        print(f"   První záznam: {ordered[0]['time']} -> {ordered[0]['value']} {unit or ''}")
+        print(f"   Poslední záznam: {ordered[-1]['time']} -> {ordered[-1]['value']} {unit or ''}")
+
+    hourly_buckets, trimmed = process_pnd_response(
+        raw_points, unit, interval_minutes, fetch_start, now
+    )
+    print("\n4. Zpracováno (stejná logika jako coordinator.py):")
+    print(f"   Ořezáno nulových (zatím neúplných) záznamů z konce: {trimmed}")
+    print(f"   Hotových hodinových bodů: {len(hourly_buckets)}")
+    summary["hourly_points"] = len(hourly_buckets)
+    if hourly_buckets:
+        oldest = min(hourly_buckets)
+        newest = max(hourly_buckets)
+        print(f"   Rozsah: {oldest.isoformat()} .. {newest.isoformat()}")
+        print(f"   'last_pnd_timestamp' by byl: {(newest + timedelta(hours=1)).isoformat()}")
+        total_kwh = sum(hourly_buckets.values())
+        summary["total_kwh"] = total_kwh
+        print(f"   Součet energie v okně: {total_kwh:.3f} kWh")
+
+    csv_path = outdir / f"pnd_hourly_{assembly_code}_{timestamp_tag}.csv"
+    write_csv(csv_path, hourly_buckets)
+    print(f"   Hodinová data (jak by šla do HA statistik) uložena do: {csv_path}")
+    return summary
+
+
+def print_summary_table(summaries: list[dict]) -> None:
+    """Přehled všech testovaných assemblyCode vedle sebe (issue #30).
+
+    Kód se stavem registru -E poznáš podle jednotky kWh, hodnot v řádu
+    stavu elektroměru (tisíce kWh) a toho, že mezi prvním a posledním
+    záznamem jen mírně roste - hodinová energie ("06") má oproti tomu
+    hodnoty v jednotkách kWh a "součet v okně" odpovídá reálné dodávce
+    za období."""
+    print("\n===== SOUHRN PODLE assemblyCode =====")
+    header = f"{'kód':>4} | {'záznamů':>7} | {'jedn.':>5} | {'krok':>5} | {'první hodnota':>32} | {'poslední hodnota':>32} | {'součet kWh':>11}"
+    print(header)
+    print("-" * len(header))
+    for s in summaries:
+        first = f"{s['first'][0]} -> {s['first'][1]}" if s["first"] else "-"
+        last = f"{s['last'][0]} -> {s['last'][1]}" if s["last"] else "-"
+        interval = f"{s['interval']}min" if s["interval"] else "-"
+        total = f"{s['total_kwh']:.3f}" if s["total_kwh"] is not None else "-"
+        print(
+            f"{s['assembly']:>4} | {s['records']:>7} | {str(s['unit'] or '-'):>5} | {interval:>5} | "
+            f"{first:>32} | {last:>32} | {total:>11}"
+        )
+        if s["error"]:
+            print(f"       chyba: {s['error']}")
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(
         description="Test hodinové spotřeby ČEZ (appka Proud) - stejný kód jako HA plugin",
@@ -154,7 +308,8 @@ async def main() -> int:
         default=None,
         help=f"assemblyCode pro pnd/data (výchozí z const.py: {PND_ASSEMBLY_HOURLY}=hodinová kWh, "
         f"{PND_ASSEMBLY_15MIN}=15min kW). Lze zadat i jiný kód z výstupu --status, "
-        "např. pro výrobní/mikrozdrojové EAN (issue #24).",
+        "např. pro výrobní/mikrozdrojové EAN (issue #24), nebo víc kódů oddělených "
+        "čárkou (např. 02,04,06,08,10,12) - každý se stáhne a vyhodnotí zvlášť (issue #30).",
     )
     parser.add_argument(
         "--status",
@@ -203,10 +358,14 @@ async def main() -> int:
     username = args.username or input("Uživatelské jméno ČEZ: ").strip()
     password = args.password or os.getenv("CEZ_PASS") or getpass.getpass("Heslo ČEZ: ")
 
-    assembly_code = args.assembly or PND_ASSEMBLY_HOURLY
-    # Neznámý kód (např. z --status) bereme jako hodinový - jde jen o
-    # přepočet časových razítek ve zpracování, syrová data jsou v JSONu tak jako tak.
-    interval_minutes = 15 if assembly_code == PND_ASSEMBLY_15MIN else PND_INTERVAL_MINUTES
+    assembly_codes = [
+        code.strip() for code in (args.assembly or PND_ASSEMBLY_HOURLY).split(",") if code.strip()
+    ]
+    if not assembly_codes:
+        raise SystemExit("--assembly neobsahuje žádný kód.")
+    # Pro výpočet fetch_start u --simulate-last-known bereme krok prvního
+    # kódu (u víc kódů jde jen o pár minut rozdílu na začátku okna).
+    interval_minutes = _assumed_interval_minutes(assembly_codes[0])
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -268,63 +427,25 @@ async def main() -> int:
                 fetch_start = now - timedelta(days=2)
                 fetch_end = _parse_iso(args.date_to) if args.date_to else now
 
-            print(
-                f"\n3. Stahuji pnd/data (assemblyCode={assembly_code}, "
-                f"interval={interval_minutes}min): {fetch_start.isoformat()} .. {fetch_end.isoformat()}"
-            )
-
-            def _on_chunk_error(chunk_start, chunk_end, err):
-                print(f"   [chyba] okno {chunk_start} .. {chunk_end} selhalo: {err}", file=sys.stderr)
-
-            raw_points, unit = await fetch_pnd_chunked(
-                client, partner, ean, fetch_start, fetch_end, assembly_code,
-                MAX_PND_INTERVAL_DAYS, on_chunk_error=_on_chunk_error,
-            )
-            print(f"   Staženo syrových záznamů: {len(raw_points)}, jednotka: {unit}")
-
-            # issue #24: interval_minutes výše je jen odhad podle assemblyCode
-            # (spolehlivý pro známé 03/05, u ostatních kódů - typicky
-            # výrobní/dodávkové EANy - jsme si ho jen domýšleli). Ověřeno
-            # živě: assemblyCode=02 (dodávka) vrací 15minutová data, ne
-            # hodinová, a domněnka "60min" by přepočet kW->kWh i hodinovou
-            # agregaci spočítala 4x špatně. Odvozujeme skutečný krok přímo
-            # z časových značek - u známých kódů to jen potvrdí odhad, u
-            # neznámých to je jediný spolehlivý zdroj.
-            detected_interval = infer_interval_minutes(raw_points, fallback=interval_minutes)
-            if detected_interval != interval_minutes:
-                print(
-                    f"   ⚠️  Krok dat podle časových značek je {detected_interval}min, "
-                    f"ne předpokládaných {interval_minutes}min - používám odvozenou "
-                    "hodnotu (issue #24)."
-                )
-                interval_minutes = detected_interval
-
             timestamp_tag = now.strftime("%Y%m%dT%H%M%S")
-            json_path = outdir / f"pnd_raw_{timestamp_tag}.json"
-            with json_path.open("w", encoding="utf-8") as f:
-                json.dump(raw_points, f, ensure_ascii=False, indent=2)
-            print(f"   Syrová data uložena do: {json_path}")
+            summaries: list[dict] = []
+            for assembly_code in assembly_codes:
+                summary = await run_assembly_code(
+                    client,
+                    partner,
+                    ean,
+                    assembly_code,
+                    fetch_start,
+                    fetch_end,
+                    now,
+                    outdir,
+                    timestamp_tag,
+                    show_raw=args.raw,
+                )
+                summaries.append(summary)
 
-            if args.raw:
-                dump_raw("pnd_data (syrová)", raw_points)
-
-            hourly_buckets, trimmed = process_pnd_response(
-                raw_points, unit, interval_minutes, fetch_start, now
-            )
-            print("\n4. Zpracováno (stejná logika jako coordinator.py):")
-            print(f"   Ořezáno nulových (zatím neúplných) záznamů z konce: {trimmed}")
-            print(f"   Hotových hodinových bodů: {len(hourly_buckets)}")
-            if hourly_buckets:
-                oldest = min(hourly_buckets)
-                newest = max(hourly_buckets)
-                print(f"   Rozsah: {oldest.isoformat()} .. {newest.isoformat()}")
-                print(f"   'last_pnd_timestamp' by byl: {(newest + timedelta(hours=1)).isoformat()}")
-                total_kwh = sum(hourly_buckets.values())
-                print(f"   Celková spotřeba v okně: {total_kwh:.3f} kWh")
-
-            csv_path = outdir / f"pnd_hourly_{timestamp_tag}.csv"
-            write_csv(csv_path, hourly_buckets)
-            print(f"   Hodinová data (jak by šla do HA statistik) uložena do: {csv_path}")
+            if len(summaries) > 1:
+                print_summary_table(summaries)
 
         except (CezAuthError, CezApiError) as err:
             print(f"\nCHYBA: {type(err).__name__}: {err}", file=sys.stderr)
