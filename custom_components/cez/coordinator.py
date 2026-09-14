@@ -1,6 +1,7 @@
 """Koordinátor aktualizací dat pro ČEZ Distribuce."""
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -103,6 +104,15 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # od kdy součet platí. None dokud statistika neexistuje.
         self.pnd_total_kwh: float | None = None
         self.pnd_first_timestamp: datetime | None = None
+
+        # Diagnostika pnd/status (issue #30) - jednou za běh HA zjistíme a
+        # zalogujeme, jaké assemblyCode kódy ČEZ pro tohoto partnera/EAN
+        # vůbec nabízí, ať to nemusí uživatelé zjišťovat ručně přes
+        # scripts/test_pnd_consumption.py --status. 'pnd_status_info' je
+        # navíc vystavené jako atribut diagnostické entity (sensor.py), ať
+        # je to vidět i bez čtení logu.
+        self._pnd_status_checked = False
+        self.pnd_status_info: dict[str, Any] | None = None
 
         super().__init__(
             hass,
@@ -219,6 +229,14 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         recorder = get_instance(self.hass)
         now = datetime.now(timezone.utc)
 
+        # Diagnostika (issue #30) - nezávislá na zbytku metody, nikdy
+        # nesmí zablokovat/shodit reálný import dat, proto vlastní try/except
+        # navíc k tomu, co má metoda samotná.
+        try:
+            await self._async_log_pnd_status()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Diagnostika pnd/status selhala (%s), pokračuji.", err)
+
         last_stats = await recorder.async_add_executor_job(
             get_last_statistics, self.hass, 1, statistic_id, True, {"start", "sum"}
         )
@@ -312,10 +330,14 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # issue #24 - "Nemam eventu"). Bez tohoto varování to bylo
                 # vidět jen v DEBUG logu, takže si toho uživatel běžně nevšiml.
                 _LOGGER.warning(
-                    "Import hodinových dat (%s, %s) selhal pro všech %d "
-                    "stažených oken - statistika '%s' se v tomto cyklu "
-                    "nevytvoří/neaktualizuje. Poslední chyba: %s",
+                    "Import hodinových dat (ean=%s, partner=%s, "
+                    "assemblyCode=%s, %s) selhal pro všech %d stažených "
+                    "oken - statistika '%s' se v tomto cyklu "
+                    "nevytvoří/neaktualizuje. Poslední chyba: %s "
+                    "(viz i pnd/status výše v logu - issue #30).",
                     self._ean,
+                    self._partner,
+                    self._assembly_code,
                     "výroba" if self._is_production else "spotřeba",
                     len(chunk_errors),
                     statistic_id,
@@ -465,6 +487,106 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 err,
             )
             return None
+
+    async def _async_log_pnd_status(self) -> None:
+        """Jednou za běh HA zaloguje syrovou odpověď pnd/status/{partner}
+        (issue #30).
+
+        Cíl: zjistit, jaké assemblyCode kódy ČEZ pro tohoto partnera/EAN
+        vůbec nabízí, přímo v HA logu - bez nutnosti ručně spouštět
+        scripts/test_pnd_consumption.py --status. Nevoláme to každou
+        hodinu (partner/EAN se v rámci běhu HA nemění), jen jednou po
+        startu, a NEBLOKUJE to skutečný import dat - volá se před ním,
+        ale jakákoliv chyba se jen zaloguje a pokračuje se dál.
+
+        Neznáme přesnou strukturu odpovědi (žádný zachycený vzorek), proto
+        se nepokoušíme nic automaticky rozhodovat - jen co nejvíc
+        informací do logu a na diagnostickou entitu, ať to jde vyhodnotit
+        z reportů uživatelů (viz issue #30 diskuze)."""
+        if self._pnd_status_checked:
+            return
+        self._pnd_status_checked = True
+
+        try:
+            status = await self._client.get_pnd_status(self._partner)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning(
+                "pnd/status/%s selhalo (%s) - nelze zjistit, jaké assemblyCode "
+                "kódy ČEZ pro tohoto partnera nabízí (issue #30, EAN %s).",
+                self._partner,
+                err,
+                self._ean,
+            )
+            self.pnd_status_info = {"error": str(err)}
+            return
+
+        codes_found = _extract_assembly_codes(status)
+        code_offered = self._assembly_code in codes_found if codes_found else None
+        self.pnd_status_info = {
+            "partner": self._partner,
+            "assembly_code_used": self._assembly_code,
+            "codes_found": codes_found,
+            "assembly_code_offered": code_offered,
+        }
+
+        _LOGGER.info(
+            "pnd/status/%s (EAN=%s, %s): používaný "
+            "assemblyCode=%s, nalezené kódy v odpovědi=%s, používaný kód "
+            "nabízen=%s.",
+            self._partner,
+            self._ean,
+            "výroba" if self._is_production else "spotřeba",
+            self._assembly_code,
+            codes_found if codes_found is not None else "nerozpoznáno ze schématu odpovědi",
+            code_offered,
+        )
+        # Syrová odpověď zvlášť (i kdyby výše extrakce podle klíče
+        # "assembly*" nic nenašla, protože neznáme přesné schéma) - ať má
+        # člověk čtoucí log kompletní podklad, ne jen náš (možná chybný)
+        # výklad (issue #30).
+        _LOGGER.info(
+            "pnd/status/%s syrová odpověď (zkráceno na 4000 znaků): %s",
+            self._partner,
+            json.dumps(status, ensure_ascii=False, default=str)[:4000],
+        )
+
+        if codes_found and not code_offered:
+            _LOGGER.warning(
+                "ČEZ pro partnera %s (EAN %s) v pnd/status NEnabízí "
+                "assemblyCode %s, který integrace používá pro %s - dálkový "
+                "odečet pro tuhle granularitu/registr zřejmě není na tomto "
+                "účtu aktivovaný (issue #30). Nabízené kódy: %s.",
+                self._partner,
+                self._ean,
+                self._assembly_code,
+                "výrobu" if self._is_production else "spotřebu",
+                codes_found,
+            )
+
+
+def _extract_assembly_codes(raw: Any) -> list[str] | None:
+    """Nejlepší odhad seznamu assemblyCode kódů z odpovědi pnd/status.
+
+    Neznáme přesné schéma odpovědi (žádný zachycený vzorek) - hledáme
+    proto obecně jakýkoliv klíč obsahující "assembly" (case-insensitive)
+    kdekoliv ve vnořené struktuře. Vrací None, pokud se nic takového
+    nenajde (to NEMUSÍ znamenat, že kódy nejsou nabízené - jen že odpověď
+    má jiné schéma, než jsme čekali; proto se vždy loguje i syrová
+    odpověď, viz _async_log_pnd_status)."""
+    found: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if "assembly" in key.lower() and isinstance(value, (str, int)):
+                    found.add(str(value))
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(raw)
+    return sorted(found) if found else None
 
 
 def _stat_row_start(row: dict[str, Any]) -> datetime | None:

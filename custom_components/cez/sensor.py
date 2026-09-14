@@ -602,6 +602,23 @@ class CezConsumptionFreshnessSensor(CoordinatorEntity[CezDistribuceCoordinator],
         """Konec poslední naimportované hodiny (UTC)."""
         return self.coordinator.last_pnd_timestamp
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Diagnostika pnd/status (issue #30) - jaké assemblyCode kódy ČEZ
+        pro tohoto partnera/EAN nabízí, ať je to vidět i bez čtení logu
+        (Nastavení → Zařízení a služby → ČEZ → zařízení → tahle entita →
+        Atributy)."""
+        info = self.coordinator.pnd_status_info
+        if not info:
+            return {}
+        return {
+            "pnd_status_partner": info.get("partner"),
+            "pnd_status_assembly_code_pouzity": info.get("assembly_code_used"),
+            "pnd_status_kody_nalezene": info.get("codes_found"),
+            "pnd_status_pouzity_kod_nabizen": info.get("assembly_code_offered"),
+            "pnd_status_chyba": info.get("error"),
+        }
+
 
 def _latest_reading(data: dict | None) -> dict | None:
     """Vrátí poslední záznam odečtu, pokud existuje."""
