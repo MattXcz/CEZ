@@ -433,7 +433,7 @@ class CezTotalConsumptionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sen
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
-    _attr_icon = "mdi:transmission-tower-import"
+    _attr_icon = "mdi:transmission-tower-export"
     _attr_has_entity_name = True
 
     def __init__(
@@ -496,7 +496,7 @@ class CezTotalProductionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sens
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 2
-    _attr_icon = "mdi:transmission-tower-export"
+    _attr_icon = "mdi:transmission-tower-import"
     _attr_has_entity_name = True
 
     def __init__(
