@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import secrets
 import urllib.parse
 import uuid
@@ -67,6 +68,115 @@ class CezAuthError(Exception):
 
 class CezApiError(Exception):
     """Obecná chyba API."""
+
+
+class CezUnexpectedLoginPageError(CezApiError):
+    """Po odeslání přihlašovacích údajů nedoběhl řetěz přesměrování na portál.
+
+    Typicky CAS/portál vložil mezikrok, se kterým integrace nepočítá - např.
+    výběr účtu, když jeden e-mail má víc účtů (osobní + podnikatelský,
+    issue #37). Struktura stránky je zalogovaná přes _describe_page().
+    """
+
+
+# Klíčová slova, podle kterých v diagnostice odhadujeme, že mezikrok po
+# přihlášení je výběr účtu/profilu (issue #37). Jen pro log - na chování
+# to nemá vliv.
+_ACCOUNT_SELECTION_HINTS = (
+    "účet",
+    "účtu",
+    "profil",
+    "podnikatel",
+    "fyzická osoba",
+    "právnická osoba",
+    "vyberte",
+    "zvolte",
+    "account",
+    "select",
+)
+
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+_DIGITS_RE = re.compile(r"\d")
+
+
+def _mask_text(text: str) -> str:
+    """Zamaskuje e-maily a číslice (EAN, IČ, čísla účtů) - log jde do issue."""
+    return _DIGITS_RE.sub("#", _EMAIL_RE.sub("<email>", text))
+
+
+def _describe_page(url: str, status: int, html: str) -> dict[str, Any]:
+    """Vrátí strukturu neočekávané stránky pro diagnostiku (bez osobních údajů).
+
+    Hodnoty polí, query parametrů ani popisky voleb se nelogují (mohou
+    obsahovat jména, IČ, tokeny); jen jejich názvy, typy a počty.
+    """
+    parsed = urllib.parse.urlparse(url)
+    info: dict[str, Any] = {
+        "status": status,
+        "host": parsed.hostname,
+        "path": parsed.path,
+        "query_keys": sorted(urllib.parse.parse_qs(parsed.query).keys()),
+    }
+    soup = BeautifulSoup(html or "", "html.parser")
+    info["title"] = _mask_text(soup.title.get_text(strip=True)) if soup.title else None
+    info["headings"] = [
+        _mask_text(h.get_text(" ", strip=True))[:120]
+        for h in soup.find_all(["h1", "h2", "h3"])[:8]
+    ]
+    forms = []
+    for form in soup.find_all("form")[:5]:
+        action = urllib.parse.urlparse(form.get("action") or "")
+        fields = []
+        for field in form.find_all(["input", "select", "button", "textarea"]):
+            entry = {
+                "tag": field.name,
+                "type": field.get("type"),
+                "name": field.get("name"),
+            }
+            if field.name == "select":
+                entry["options"] = len(field.find_all("option"))
+            fields.append(entry)
+        radios: dict[str, int] = {}
+        for f in fields:
+            if f["type"] in ("radio", "checkbox") and f["name"]:
+                radios[f["name"]] = radios.get(f["name"], 0) + 1
+        forms.append(
+            {
+                "id": form.get("id"),
+                "method": (form.get("method") or "get").lower(),
+                "action_path": action.path or None,
+                "fields": fields[:30],
+                "radio_groups": radios,
+            }
+        )
+    info["forms"] = forms
+    text = soup.get_text(" ", strip=True).lower()
+    info["account_selection_hints"] = [h for h in _ACCOUNT_SELECTION_HINTS if h in text]
+    info["_text_preview"] = _mask_text(" ".join(soup.get_text(" ", strip=True).split()))[:800]
+    return info
+
+
+def _is_login_form(html: str) -> bool:
+    """True, pokud stránka je (znovu) CAS přihlašovací formulář."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    return bool(
+        soup.find("input", {"name": "execution"})
+        and soup.find("input", {"type": "password"})
+    )
+
+
+def _log_unexpected_page(step: str, url: str, status: int, html: str) -> dict[str, Any]:
+    """Zaloguje popis neočekávané stránky (WARNING struktura, DEBUG náhled textu)."""
+    info = _describe_page(url, status, html)
+    preview = info.pop("_text_preview")
+    _LOGGER.warning(
+        "ČEZ %s: neočekávaná stránka po přihlášení (možná výběr účtu, issue #37). "
+        "Pošlete prosím tento řádek do issue: %s",
+        step,
+        json.dumps(info, ensure_ascii=False),
+    )
+    _LOGGER.debug("ČEZ %s: náhled textu stránky (maskováno): %s", step, preview)
+    return info
 
 
 class _InvalidJsonResponse(CezApiError):
@@ -214,25 +324,61 @@ class CezDistribuceApiClient:
                     "geolocation": "",
                 },
             ) as resp:
-                landed_with_code = (
-                    resp.url.host == self._portal_host and "code" in resp.url.query
+                landed_on_portal = resp.url.host == self._portal_host
+                landed_with_code = landed_on_portal and "code" in resp.url.query
+                _LOGGER.debug(
+                    "Login POST skončil: HTTP %s, host=%s, path=%s, code=%s, redirectů=%d",
+                    resp.status,
+                    resp.url.host,
+                    resp.url.path,
+                    landed_with_code,
+                    len(resp.history),
                 )
                 if resp.status == 404 and landed_with_code:
                     _LOGGER.debug(
-                        "Portál vrátil 404 z landing iView (%s), kód doručen - pokračuji",
-                        resp.url,
+                        "Portál vrátil 404 z landing iView, kód doručen - pokračuji"
                     )
                 elif resp.status not in (200, 302):
+                    html = await resp.text()
+                    _log_unexpected_page("login POST", str(resp.url), resp.status, html)
                     raise CezAuthError(f"Přihlášení selhalo, HTTP {resp.status}")
                 else:
                     html = await resp.text()
                     if "Nesprávné" in html or "incorrect" in html.lower():
                         raise CezAuthError("Nesprávné přihlašovací údaje.")
+                    if not landed_on_portal and _is_login_form(html):
+                        # CAS vrátil znovu přihlašovací formulář = údaje
+                        # neprošly, jen s jinou hláškou než "Nesprávné".
+                        raise CezAuthError("Nesprávné přihlašovací údaje.")
+                    if not landed_on_portal:
+                        # Řetěz přesměrování zůstal na CAS (mepas.cez.cz) -
+                        # CAS chce po uživateli ještě něco (výběr účtu,
+                        # souhlas, změna hesla...). Bez toho /token/get
+                        # vrátí HTML portálu a chyba by byla matoucí.
+                        info = _log_unexpected_page(
+                            "login POST", str(resp.url), resp.status, html
+                        )
+                        raise CezUnexpectedLoginPageError(
+                            "Po přihlášení CAS nepřesměroval na portál "
+                            f"(zůstal na {info['host']}{info['path']}). "
+                            "Pravděpodobně je vyžadován mezikrok, např. výběr účtu."
+                        )
 
             # Krok 3 – načíst API token (autentizovaný)
             token_url = f"{self._base_url}/rest-auth-api?path=/token/get"
             async with auth_session.get(token_url) as resp:
-                data = await self._read_json_response(resp, token_url)
+                try:
+                    data = await self._read_json_response(resp, token_url)
+                except _InvalidJsonResponse as err:
+                    if err.looks_like_portal_html:
+                        _log_unexpected_page(
+                            "token/get", str(resp.url), resp.status, await resp.text()
+                        )
+                        raise CezUnexpectedLoginPageError(
+                            "Portál po přihlášení nevydal API token (vrátil HTML). "
+                            "Pravděpodobně je vyžadován mezikrok, např. výběr účtu."
+                        ) from err
+                    raise
                 self._api_token = data if isinstance(data, str) else data.get("data") or data.get("token")
 
             # Uložit cookies pro pozdější použití
@@ -319,6 +465,8 @@ class CezDistribuceApiClient:
             ) as resp:
                 if resp.status not in (301, 302, 303, 307, 308):
                     text = await resp.text()
+                    if not _is_login_form(text):
+                        _log_unexpected_page("MEPAS login POST", str(resp.url), resp.status, text)
                     raise CezAuthError(
                         f"MEPAS přihlášení selhalo, HTTP {resp.status}: "
                         f"{text[:200]!r}"
