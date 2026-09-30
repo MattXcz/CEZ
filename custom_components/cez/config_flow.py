@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -38,65 +37,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
-async def _login_and_get_supply_points(username: str, password: str) -> list[dict]:
-    """Přihlásí se a vrátí seznam odběrných míst."""
-    _LOGGER.debug("Config flow: přihlašuji se pro načtení odběrných míst.")
-    async with aiohttp.ClientSession() as session:
-        client = CezDistribuceApiClient(username=username, password=password, session=session)
-        await client.login()
-        _LOGGER.debug("Config flow: načítám odběrná místa.")
-        data = await client.get_supply_points()
-
-    vstelles = []
-    if data and isinstance(data, dict):
-        blocks = data.get("vstelleBlocks", {}).get("blocks", [])
-        for block in blocks:
-            vstelles.extend(block.get("vstelles", []))
-    _LOGGER.debug("Config flow: načteno odběrných míst=%d.", len(vstelles))
-    return vstelles
-
-
-async def _fetch_hdo_signals(username: str, password: str, ean: str) -> list[str]:
-    """Vrátí seznam unikátních HDO signálů pro daný EAN (např. ['a3b7dp01', 'a3b7dp06'])."""
-    _LOGGER.debug("Config flow: přihlašuji se pro načtení HDO signálů.")
-    async with aiohttp.ClientSession() as session:
-        client = CezDistribuceApiClient(username=username, password=password, session=session)
-        await client.login()
-        signals_data = await client.get_signals(ean)
-
-    signal_list = (
-        signals_data.get("signals", []) if isinstance(signals_data, dict) else []
-    )
-    seen: set[str] = set()
-    unique: list[str] = []
-    for entry in signal_list:
-        code = entry.get("signal", "")
-        if code and code not in seen:
-            seen.add(code)
-            unique.append(code)
-    _LOGGER.debug("Config flow: načteno HDO signálů=%d.", len(unique))
-    return unique
-
-
-async def _fetch_anlage(username: str, password: str, uid: str) -> str:
-    """Vrátí 'anlage' (SAP technické číslo) z detailu odběrného místa -
-    potřebné pro hodinovou/15min spotřebu (/pnd/data). Volitelné - pokud
-    selže, integrace se přidá i bez hodinové spotřeby (viz __init__.py,
-    který se to pak pokusí dohledat znovu při dalším startu)."""
-    _LOGGER.debug("Config flow: přihlašuji se pro načtení detailu odběrného místa.")
-    async with aiohttp.ClientSession() as session:
-        client = CezDistribuceApiClient(username=username, password=password, session=session)
-        await client.login()
-        detail = await client.get_supply_point_detail(uid)
-
-    if isinstance(detail, dict):
-        anlage = (detail.get("anlage_Dist") or {}).get("cislo") or detail.get("anlage", "")
-    else:
-        anlage = ""
-    _LOGGER.debug("Config flow: technické číslo odběrného místa nalezeno=%s.", bool(anlage))
-    return anlage
-
-
 class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Průvodce nastavením integrace ČEZ."""
 
@@ -127,29 +67,6 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await client.login()
             self._client = client
         return self._client
-
-    async def _async_fetch_anlage(self) -> None:
-        """Volitelně načte technické číslo, aniž by blokovalo výběr HDO."""
-        if self._selected_anlage:
-            return
-
-        try:
-            client = await self._async_get_client()
-            detail = await client.get_supply_point_detail(self._selected_uid)
-            if isinstance(detail, dict):
-                self._selected_anlage = (
-                    (detail.get("anlage_Dist") or {}).get("cislo")
-                    or detail.get("anlage", "")
-                )
-            _LOGGER.debug(
-                "Config flow: technické číslo odběrného místa nalezeno=%s.",
-                bool(self._selected_anlage),
-            )
-        except Exception:
-            _LOGGER.exception(
-                "Nepodařilo se dohledat technické číslo odběrného místa; "
-                "hodinová spotřeba se zkusí nastavit později."
-            )
 
     # ------------------------------------------------------------------
     # Krok 1 – přihlašovací údaje
@@ -246,7 +163,6 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            await self._async_fetch_anlage()
             return await self._async_create_entry(
                 user_input[CONF_HDO_SIGNAL],
                 user_input[CONF_PRICE_VT],
@@ -284,7 +200,6 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Pokud nejsou žádné signály, přeskočíme krok
         if not self._hdo_signals:
-            await self._async_fetch_anlage()
             return await self._async_create_entry("", DEFAULT_PRICE_VT, DEFAULT_PRICE_NT)
 
         options = {s: s for s in self._hdo_signals}
@@ -334,10 +249,16 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         price_nt: float,
     ) -> FlowResult:
         """Vytvoří config entry."""
+        title = self._selected_title.strip() or f"ČEZ {self._selected_ean}".strip() or "ČEZ"
+        _LOGGER.debug(
+            "Config flow: vytvářím config entry (název vyplněn=%s, EAN uložen=%s).",
+            bool(title),
+            bool(self._selected_ean),
+        )
         await self.async_set_unique_id(self._selected_ean)
         self._abort_if_unique_id_configured()
         return self.async_create_entry(
-            title=self._selected_title or f"ČEZ {self._selected_ean}".strip() or "ČEZ",
+            title=title,
             data={
                 CONF_USERNAME: self._username,
                 CONF_PASSWORD: self._password,
