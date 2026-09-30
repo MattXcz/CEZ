@@ -234,6 +234,14 @@ def _response_diagnostics(
     return diagnostics
 
 
+def _safe_endpoint(url: str) -> str:
+    """Vrátí host, cestu a názvy query parametrů bez jejich hodnot."""
+    parsed = urllib.parse.urlparse(url)
+    query_keys = sorted(urllib.parse.parse_qs(parsed.query).keys())
+    query = f"?keys={','.join(query_keys)}" if query_keys else ""
+    return f"{parsed.hostname}{parsed.path}{query}"
+
+
 def _make_pkce_pair() -> tuple[str, str]:
     """Vygeneruje (code_verifier, code_challenge) dle RFC 7636 (S256)."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b"=").decode("ascii")
@@ -323,9 +331,17 @@ class CezDistribuceApiClient:
             # Krok 1 – GET authorize (jako prohlížeč). Bez SSO session nás
             # CAS přesměruje na /cas/login?service=... s formulářem; resp.url
             # je pak ta login URL, na kterou míří POST v kroku 2.
+            _LOGGER.debug("CAS authorize požadavek: endpoint=%s", _safe_endpoint(self._authorize_url))
             async with auth_session.get(self._authorize_url) as resp:
                 login_url = str(resp.url)
                 html = await resp.text()
+                _LOGGER.debug(
+                    "CAS authorize odpověď: HTTP=%d endpoint=%s content_type=%s redirects=%d",
+                    resp.status,
+                    _safe_endpoint(login_url),
+                    resp.headers.get("Content-Type", "neznámý"),
+                    len(resp.history),
+                )
             if "/cas/login" not in login_url:
                 raise CezAuthError(
                     f"CAS authorize: neočekávané přesměrování na {login_url!r}"
@@ -343,6 +359,7 @@ class CezDistribuceApiClient:
             # User-Agentu vrací 404 ("Could not open iView. The iView is not
             # compatible with your browser..."); to je kosmetické, cookies
             # jsou nastavené a /token/get níž funguje (issue #24).
+            _LOGGER.debug("Odesílám přihlašovací formulář CAS na endpoint=%s", _safe_endpoint(login_url))
             async with auth_session.post(
                 login_url,
                 data={
@@ -650,6 +667,14 @@ class CezDistribuceApiClient:
     async def _read_json_response(self, resp: aiohttp.ClientResponse, url: str) -> Any:
         """Načte JSON odpověď a převede nevalidní tělo na čitelnou API chybu."""
         text = await resp.text()
+        _LOGGER.debug(
+            "ČEZ API odpověď: endpoint=%s HTTP=%d content_type=%s body_chars=%d redirects=%d",
+            _safe_endpoint(str(resp.url)),
+            resp.status,
+            resp.headers.get("Content-Type", "neznámý"),
+            len(text),
+            len(resp.history),
+        )
         if resp.status >= 400:
             raise CezApiError(f"HTTP {resp.status} pro {url}: {text[:200] or 'prázdná odpověď'}")
         content_type = resp.headers.get("Content-Type", "neznámý")
@@ -689,6 +714,13 @@ class CezDistribuceApiClient:
     ) -> Any:
         url = f"{self._base_url}/{path}"
         for attempt in range(LOGIN_RETRIES):
+            _LOGGER.debug(
+                "ČEZ API požadavek: %s endpoint=%s pokus=%d/%d",
+                method,
+                _safe_endpoint(url),
+                attempt + 1,
+                LOGIN_RETRIES,
+            )
             headers = {}
             if authenticated and self._api_token:
                 headers["X-Request-Token"] = self._api_token

@@ -9,6 +9,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import CezAuthError, CezDistribuceApiClient
 from .const import (
@@ -39,9 +40,11 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 async def _login_and_get_supply_points(username: str, password: str) -> list[dict]:
     """Přihlásí se a vrátí seznam odběrných míst."""
+    _LOGGER.debug("Config flow: přihlašuji se pro načtení odběrných míst.")
     async with aiohttp.ClientSession() as session:
         client = CezDistribuceApiClient(username=username, password=password, session=session)
         await client.login()
+        _LOGGER.debug("Config flow: načítám odběrná místa.")
         data = await client.get_supply_points()
 
     vstelles = []
@@ -49,11 +52,13 @@ async def _login_and_get_supply_points(username: str, password: str) -> list[dic
         blocks = data.get("vstelleBlocks", {}).get("blocks", [])
         for block in blocks:
             vstelles.extend(block.get("vstelles", []))
+    _LOGGER.debug("Config flow: načteno odběrných míst=%d.", len(vstelles))
     return vstelles
 
 
 async def _fetch_hdo_signals(username: str, password: str, ean: str) -> list[str]:
     """Vrátí seznam unikátních HDO signálů pro daný EAN (např. ['a3b7dp01', 'a3b7dp06'])."""
+    _LOGGER.debug("Config flow: přihlašuji se pro načtení HDO signálů.")
     async with aiohttp.ClientSession() as session:
         client = CezDistribuceApiClient(username=username, password=password, session=session)
         await client.login()
@@ -69,6 +74,7 @@ async def _fetch_hdo_signals(username: str, password: str, ean: str) -> list[str
         if code and code not in seen:
             seen.add(code)
             unique.append(code)
+    _LOGGER.debug("Config flow: načteno HDO signálů=%d.", len(unique))
     return unique
 
 
@@ -77,14 +83,18 @@ async def _fetch_anlage(username: str, password: str, uid: str) -> str:
     potřebné pro hodinovou/15min spotřebu (/pnd/data). Volitelné - pokud
     selže, integrace se přidá i bez hodinové spotřeby (viz __init__.py,
     který se to pak pokusí dohledat znovu při dalším startu)."""
+    _LOGGER.debug("Config flow: přihlašuji se pro načtení detailu odběrného místa.")
     async with aiohttp.ClientSession() as session:
         client = CezDistribuceApiClient(username=username, password=password, session=session)
         await client.login()
         detail = await client.get_supply_point_detail(uid)
 
     if isinstance(detail, dict):
-        return (detail.get("anlage_Dist") or {}).get("cislo") or detail.get("anlage", "")
-    return ""
+        anlage = (detail.get("anlage_Dist") or {}).get("cislo") or detail.get("anlage", "")
+    else:
+        anlage = ""
+    _LOGGER.debug("Config flow: technické číslo odběrného místa nalezeno=%s.", bool(anlage))
+    return anlage
 
 
 class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -103,6 +113,43 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_title: str = ""
         self._selected_om_type: str = ""
         self._hdo_signals: list[str] = []
+        self._client: CezDistribuceApiClient | None = None
+
+    async def _async_get_client(self) -> CezDistribuceApiClient:
+        """Přihlásí se nejvýše jednou a vrací klienta sdíleného pro celý flow."""
+        if self._client is None:
+            _LOGGER.debug("Config flow: vytvářím klienta a přihlašuji se k ČEZ.")
+            client = CezDistribuceApiClient(
+                username=self._username,
+                password=self._password,
+                session=async_get_clientsession(self.hass),
+            )
+            await client.login()
+            self._client = client
+        return self._client
+
+    async def _async_fetch_anlage(self) -> None:
+        """Volitelně načte technické číslo, aniž by blokovalo výběr HDO."""
+        if self._selected_anlage:
+            return
+
+        try:
+            client = await self._async_get_client()
+            detail = await client.get_supply_point_detail(self._selected_uid)
+            if isinstance(detail, dict):
+                self._selected_anlage = (
+                    (detail.get("anlage_Dist") or {}).get("cislo")
+                    or detail.get("anlage", "")
+                )
+            _LOGGER.debug(
+                "Config flow: technické číslo odběrného místa nalezeno=%s.",
+                bool(self._selected_anlage),
+            )
+        except Exception:
+            _LOGGER.exception(
+                "Nepodařilo se dohledat technické číslo odběrného místa; "
+                "hodinová spotřeba se zkusí nastavit později."
+            )
 
     # ------------------------------------------------------------------
     # Krok 1 – přihlašovací údaje
@@ -119,8 +166,22 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._password = user_input[CONF_PASSWORD]
 
             try:
-                self._supply_points = await _login_and_get_supply_points(
-                    self._username, self._password
+                client = await self._async_get_client()
+                _LOGGER.debug("Config flow: načítám odběrná místa.")
+                data = await client.get_supply_points()
+                blocks = (
+                    data.get("vstelleBlocks", {}).get("blocks", [])
+                    if isinstance(data, dict)
+                    else []
+                )
+                self._supply_points = [
+                    point
+                    for block in blocks
+                    for point in block.get("vstelles", [])
+                ]
+                _LOGGER.debug(
+                    "Config flow: načteno odběrných míst=%d.",
+                    len(self._supply_points),
                 )
             except CezAuthError:
                 errors["base"] = "invalid_auth"
@@ -185,6 +246,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            await self._async_fetch_anlage()
             return await self._async_create_entry(
                 user_input[CONF_HDO_SIGNAL],
                 user_input[CONF_PRICE_VT],
@@ -200,33 +262,37 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._hdo_signals = []
         elif not self._hdo_signals:
             try:
-                self._hdo_signals = await _fetch_hdo_signals(
-                    self._username, self._password, self._selected_ean
+                client = await self._async_get_client()
+                signals_data = await client.get_signals(self._selected_ean)
+                signal_list = (
+                    signals_data.get("signals", [])
+                    if isinstance(signals_data, dict)
+                    else []
+                )
+                seen: set[str] = set()
+                for item in signal_list:
+                    code = item.get("signal", "")
+                    if code and code not in seen:
+                        seen.add(code)
+                        self._hdo_signals.append(code)
+                _LOGGER.debug(
+                    "Config flow: načteno HDO signálů=%d.",
+                    len(self._hdo_signals),
                 )
             except Exception:
-                _LOGGER.exception("Nepodařilo se načíst HDO signály pro EAN %s", self._selected_ean)
-
-        # Zkusit dohledat 'anlage' pro hodinovou spotřebu - nepovinné, chyba
-        # tady nemá bránit dokončení nastavení integrace.
-        if not self._selected_anlage:
-            try:
-                self._selected_anlage = await _fetch_anlage(
-                    self._username, self._password, self._selected_uid
-                )
-            except Exception:
-                _LOGGER.exception(
-                    "Nepodařilo se dohledat 'anlage' pro UID %s - hodinová "
-                    "spotřeba nebude zprvu dostupná (integrace to zkusí "
-                    "znovu při příštím startu).",
-                    self._selected_uid,
-                )
+                _LOGGER.exception("Nepodařilo se načíst HDO signály.")
 
         # Pokud nejsou žádné signály, přeskočíme krok
         if not self._hdo_signals:
+            await self._async_fetch_anlage()
             return await self._async_create_entry("", DEFAULT_PRICE_VT, DEFAULT_PRICE_NT)
 
         options = {s: s for s in self._hdo_signals}
 
+        _LOGGER.debug(
+            "Config flow: zobrazuji výběr HDO signálu, možností=%d.",
+            len(options),
+        )
         return self.async_show_form(
             step_id="select_hdo_signal",
             data_schema=vol.Schema({
