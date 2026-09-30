@@ -260,20 +260,16 @@ class CezDistribuceApiClient:
         self._client_id = client_id
         self._session = session
 
-        redirect_url = base_url
+        redirect_url = f"{base_url}/common-api?path=/common/header"
         self._portal_host = urllib.parse.urlparse(base_url).hostname
         # Doslova URL tlačítka "Přihlásit" na anonymní stránce portálu
         # (dip.cezdistribuce.cz/irj/portal), včetně cesty /oidc/oidcAuthorize
-        # a pořadí parametrů. login() tímhle requestem ZAČÍNÁ, stejně jako
-        # prohlížeč: CAS bez SSO session přesměruje na /cas/login?service=...,
-        # po POSTu přihlašovacích údajů jde řetěz callbackAuthorize -> portál
-        # ?code=..., a portál si kódem založí session. Dřív integrace jela
-        # opačně (login napřímo, authorize až potom jako "krok 3") - fungovalo
-        # to, ale s matoucím "Authorize response: 404" v logu (issue #24).
+        # a pořadí parametrů. Návrat vede přes common/header, který portál
+        # používá po přihlášení v prohlížeči.
         self._authorize_url = (
             f"{CAS_BASE_URL}/oidc/oidcAuthorize"
             f"?response_type={RESPONSE_TYPE}"
-            f"&redirect_uri={urllib.parse.quote(redirect_url)}"
+            f"&redirect_uri={urllib.parse.quote(redirect_url, safe='')}"
             f"&client_id={client_id}"
             f"&scope={SCOPE}"
         )

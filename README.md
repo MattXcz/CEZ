@@ -50,7 +50,14 @@ Po přidání integrace zadejte:
 - **Uživatelské jméno** – e-mail používaný pro přihlášení k portálu ČEZ Distribuce.
 - **Heslo** – heslo k portálu ČEZ Distribuce.
 
-Pokud máte více odběrných míst, průvodce vás vyzve k výběru konkrétního místa. Při výběru HDO signálu nastavíte také:
+Přihlášení probíhá přes přihlašovací službu ČEZ (CAS). Po ověření údajů se
+portál vrací přes endpoint `common-api?path=/common/header`, který založí
+kontext portálové relace. Teprve potom integrace načte API token a seznam
+odběrných míst. Návrat na kořenovou stránku `/irj/portal` se nepoužívá, protože
+může skončit chybou HTTP 404 ještě před dokončením inicializace portálu.
+
+Pokud máte více odběrných míst, průvodce vás vyzve k výběru konkrétního místa.
+Při výběru HDO signálu nastavíte také:
 
 - **Cenu VT (Kč/kWh)**
 - **Cenu NT (Kč/kWh)**
@@ -167,6 +174,7 @@ Kód `05` u výrobního EAN vrací HTTP 400. Integrace proto používá kód `06
 
 ## Řešení problémů
 
+
 ### Debug logování
 
 Do souboru `configuration.yaml` přidejte:
@@ -178,6 +186,12 @@ logger:
 ```
 
 Po uložení konfigurace restartujte Home Assistant a následně zkontrolujte protokol.
+Při neplatné JSON odpovědi se v debug logu zobrazí stav HTTP, cílový host a
+cesta, názvy query parametrů, informace o přesměrování a bezpečný popis
+struktury případné HTML stránky (například názvy polí formuláře). Surové tělo
+odpovědi, hodnoty formulářových polí, cookies ani autorizační hlavičky se do
+tohoto diagnostického záznamu nevypisují. Před odesláním logu přesto
+zkontrolujte celý výpis a odstraňte všechny osobní údaje nebo přístupové údaje.
 
 ### Intervaly přes půlnoc
 
