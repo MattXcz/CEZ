@@ -201,6 +201,39 @@ class _InvalidJsonResponse(CezApiError):
         )
 
 
+def _response_diagnostics(
+    resp: aiohttp.ClientResponse, body_chars: int
+) -> dict[str, Any]:
+    """Popíše nevalidní odpověď bez těla a tajných hlaviček."""
+
+    def describe_url(url: str) -> dict[str, Any]:
+        parsed = urllib.parse.urlparse(url)
+        return {
+            "host": parsed.hostname,
+            "path": parsed.path,
+            "query_keys": sorted(urllib.parse.parse_qs(parsed.query).keys()),
+        }
+
+    diagnostics: dict[str, Any] = {
+        "status": resp.status,
+        "url": describe_url(str(resp.url)),
+        "content_type": resp.headers.get("Content-Type"),
+        "content_length_header": resp.headers.get("Content-Length"),
+        "body_chars": body_chars,
+        "redirects": [
+            {
+                "status": previous.status,
+                **describe_url(str(previous.url)),
+            }
+            for previous in resp.history
+        ],
+    }
+    for header in ("Server", "Transfer-Encoding", "Cache-Control"):
+        if value := resp.headers.get(header):
+            diagnostics[header.lower().replace("-", "_")] = value
+    return diagnostics
+
+
 def _make_pkce_pair() -> tuple[str, str]:
     """Vygeneruje (code_verifier, code_challenge) dle RFC 7636 (S256)."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b"=").decode("ascii")
@@ -625,12 +658,31 @@ class CezDistribuceApiClient:
             raise CezApiError(f"HTTP {resp.status} pro {url}: {text[:200] or 'prázdná odpověď'}")
         content_type = resp.headers.get("Content-Type", "neznámý")
         if not text.strip():
+            self._log_invalid_json_response(resp, text)
             raise _InvalidJsonResponse(url, resp.status, content_type, "prázdná odpověď")
         try:
             return json.loads(text)
         except json.JSONDecodeError as err:
             preview = text[:200].replace("\n", " ")
+            self._log_invalid_json_response(resp, text)
             raise _InvalidJsonResponse(url, resp.status, content_type, preview) from err
+
+    @staticmethod
+    def _log_invalid_json_response(resp: aiohttp.ClientResponse, text: str) -> None:
+        """Zaloguje bezpečnou strukturu neočekávané odpovědi pouze na DEBUG."""
+        diagnostics = _response_diagnostics(resp, len(text))
+        if "text/html" in (resp.headers.get("Content-Type") or "").lower():
+            page = _describe_page(str(resp.url), resp.status, text)
+            for key in ("title", "headings", "_text_preview"):
+                page.pop(key, None)
+            for form in page["forms"]:
+                form.pop("id", None)
+                form.pop("action_path", None)
+            diagnostics["html_structure"] = page
+        _LOGGER.debug(
+            "ČEZ API vrátil neplatnou JSON odpověď: %s",
+            json.dumps(diagnostics, ensure_ascii=False),
+        )
 
     async def _request_with_retry(
         self,
