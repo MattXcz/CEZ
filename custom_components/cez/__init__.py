@@ -26,25 +26,19 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 
-async def _async_ensure_partner_and_anlage(
+async def _async_enrich_partner_and_anlage(
     hass: HomeAssistant,
     entry: ConfigEntry,
     client: CezDistribuceApiClient,
+    coordinator: CezDistribuceCoordinator,
     uid: str,
-) -> tuple[str, str]:
-    """Zajistí, že config entry má uložené 'partner'/'anlage'.
-
-    Instalace nastavené před touto verzí pluginu je nemají - dohledáme je
-    (partner ze seznamu odběrných míst, anlage z detailu) a trvale
-    uložíme, ať se nemusí dohledávat při každém startu ani ať uživatel
-    nemusí integraci ručně znovu přidávat. Pokud dohledání selže (např.
-    odběratel bez chytrého elektroměru), integrace se přesto nastaví -
-    jen hodinová spotřeba nebude dostupná."""
+) -> None:
+    """Na pozadí doplní metadata pro volitelná hodinová data."""
     partner = entry.data.get(CONF_PARTNER, "")
     anlage = entry.data.get(CONF_ANLAGE, "")
 
     if partner and anlage:
-        return partner, anlage
+        return
 
     try:
         if not partner:
@@ -57,23 +51,39 @@ async def _async_ensure_partner_and_anlage(
                         break
 
         if not anlage:
+            _LOGGER.debug("Dohledávám technické číslo odběrného místa na pozadí.")
             detail = await client.get_supply_point_detail(uid)
             if isinstance(detail, dict):
-                anlage = (detail.get("anlage_Dist") or {}).get("cislo") or detail.get("anlage", "")
+                anlage = (
+                    (detail.get("anlage_Dist") or {}).get("cislo")
+                    or detail.get("anlage", "")
+                )
 
+        updated_data = dict(entry.data)
+        if partner:
+            updated_data[CONF_PARTNER] = partner
+        if anlage:
+            updated_data[CONF_ANLAGE] = anlage
+        if updated_data != entry.data:
+            hass.config_entries.async_update_entry(entry, data=updated_data)
         if partner and anlage:
-            hass.config_entries.async_update_entry(
-                entry,
-                data={**entry.data, CONF_PARTNER: partner, CONF_ANLAGE: anlage},
+            coordinator.set_partner_and_anlage(partner, anlage)
+            _LOGGER.info(
+                "Doplnil jsem metadata pro hodinová data; aktivuji jejich načítání."
             )
-            _LOGGER.info("Doplnil jsem 'partner'/'anlage' do konfigurace (hodinová spotřeba).")
+            await coordinator.async_refresh()
+        else:
+            _LOGGER.debug(
+                "Metadata pro hodinová data zatím nejsou kompletní "
+                "(partner=%s, anlage=%s).",
+                bool(partner),
+                bool(anlage),
+            )
     except Exception:  # noqa: BLE001
         _LOGGER.exception(
-            "Nepodařilo se dohledat 'partner'/'anlage' - hodinová spotřeba "
-            "nebude dostupná, ostatní senzory fungují normálně."
+            "Nepodařilo se doplnit metadata pro hodinová data; "
+            "ostatní senzory zůstávají funkční."
         )
-
-    return partner, anlage
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -108,8 +118,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Přihlášení do ČEZ selhalo: %s", err)
         return False
 
+    entry.async_on_unload(session.close)
     _LOGGER.debug("Přihlášení config entry dokončeno; pokračuji načtením dat.")
-    partner, anlage = await _async_ensure_partner_and_anlage(hass, entry, client, uid)
+    partner = entry.data.get(CONF_PARTNER, "")
+    anlage = entry.data.get(CONF_ANLAGE, "")
 
     coordinator = CezDistribuceCoordinator(
         hass, client, ean=ean, uid=uid, partner=partner, anlage=anlage, om_type=om_type
@@ -119,10 +131,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    # Uložit session pro cleanup
-    entry.async_on_unload(session.close)
-
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _LOGGER.debug("Platformy ČEZ byly načteny.")
+    if not partner or not anlage:
+        task = hass.async_create_task(
+            _async_enrich_partner_and_anlage(hass, entry, client, coordinator, uid),
+            name=f"{DOMAIN} enrich supply point metadata",
+        )
+        entry.async_on_unload(task.cancel)
+        _LOGGER.debug("Dohledání metadat hodinových dat běží na pozadí.")
     return True
 
 

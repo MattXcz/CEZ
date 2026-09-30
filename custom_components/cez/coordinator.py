@@ -121,6 +121,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
         )
 
+    def set_partner_and_anlage(self, partner: str, anlage: str) -> None:
+        """Aktualizuje metadata potřebná pro hodinová data."""
+        self._partner = partner
+        self._anlage = anlage
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Stáhne všechna potřebná data z ČEZ API."""
         previous_data = self.data or {}
