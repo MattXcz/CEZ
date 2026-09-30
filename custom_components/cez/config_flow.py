@@ -248,12 +248,18 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_uid = point.get("uid", "")
         self._selected_partner = point.get("partner", "")
         self._selected_om_type = point.get("typ") or OM_TYPE_CONSUMPTION
-        adresa = point.get("adresa", {})
-        base_title = adresa.get("adresaComplete") or f"ČEZ {self._selected_ean}"
+        adresa = point.get("adresa") or {}
+        base_title = (
+            adresa.get("adresaComplete")
+            if isinstance(adresa, dict)
+            else None
+        ) or f"ČEZ {self._selected_ean}"
         type_text = point.get("typText")
         self._selected_title = (
-            f"{base_title} ({type_text})" if type_text and type_text != "Spotřeba" else base_title
-        )
+            f"{base_title} ({type_text})"
+            if type_text and type_text != "Spotřeba"
+            else base_title
+        ).strip() or f"ČEZ {self._selected_ean}".strip() or "ČEZ"
 
     async def _async_create_entry(
         self,
@@ -265,7 +271,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(self._selected_ean)
         self._abort_if_unique_id_configured()
         return self.async_create_entry(
-            title=self._selected_title,
+            title=self._selected_title or f"ČEZ {self._selected_ean}".strip() or "ČEZ",
             data={
                 CONF_USERNAME: self._username,
                 CONF_PASSWORD: self._password,

@@ -82,10 +82,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     password = entry.data[CONF_PASSWORD]
     ean = entry.data[CONF_EAN]
     uid = entry.data.get("uid", "")
+    if not (entry.title or "").strip():
+        hass.config_entries.async_update_entry(
+            entry, title=f"ČEZ {ean}".strip() or "ČEZ"
+        )
+        _LOGGER.warning(
+            "Config entry neměl název; nastavil jsem bezpečný náhradní název."
+        )
     # Chybí u config entries založených před přidáním rozlišení OM typu -
     # bere se jako běžná spotřeba, aby se chování neměnilo (viz const.py).
     om_type = entry.data.get(CONF_OM_TYPE) or OM_TYPE_CONSUMPTION
 
+    _LOGGER.debug(
+        "Nastavuji ČEZ config entry (EAN uložen=%s, UID uložen=%s).",
+        bool(ean),
+        bool(uid),
+    )
     session = aiohttp.ClientSession()
     client = CezDistribuceApiClient(username=username, password=password, session=session)
 
@@ -96,12 +108,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Přihlášení do ČEZ selhalo: %s", err)
         return False
 
+    _LOGGER.debug("Přihlášení config entry dokončeno; pokračuji načtením dat.")
     partner, anlage = await _async_ensure_partner_and_anlage(hass, entry, client, uid)
 
     coordinator = CezDistribuceCoordinator(
         hass, client, ean=ean, uid=uid, partner=partner, anlage=anlage, om_type=om_type
     )
     await coordinator.async_config_entry_first_refresh()
+    _LOGGER.debug("První načtení dat config entry dokončeno.")
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
