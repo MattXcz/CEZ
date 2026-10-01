@@ -54,6 +54,17 @@ CEZ_DISTRIBUCE_BASE_URL = "https://dip.cezdistribuce.cz/irj/portal"
 
 LOGIN_RETRIES = 2
 
+# Mezikroky po přihlášení (Angular aplikace /irj/portal/landing, issue #37).
+# Účet s více prostředími (např. Domácnost + Podnikatel pod jedním e-mailem)
+# musí po přihlášení vybrat prostředí a partnera; do té doby všechna datová
+# API vrací HTTP 200 s prázdným text/html tělem.
+LANDING_CHECK_PATH = "landing?path=check"
+LANDING_ENVIRONMENTS_PATH = "landing?path=select-environment"
+LANDING_MAX_STEPS = 3
+# Pořadí, ve kterém se prostředí vybírá automaticky, když volající žádné
+# nepředepsal (stávající config entries před issue #37).
+_ENVIRONMENT_PRIORITY = ("D", "P", "S", "O", "PND")
+
 # Bez explicitního timeoutu se aiohttp spoléhá na svůj default (300 s) - pokud
 # portál na request nikdy neodpoví, celý config flow / update se na několik
 # minut zasekne, aniž by to bylo v logu vidět jako chyba. Krátký timeout tohle
@@ -64,6 +75,10 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 class CezAuthError(Exception):
     """Chyba přihlášení."""
+
+
+class CezInvalidCredentialsError(CezAuthError):
+    """Portál odmítl jméno/heslo - jediná chyba, která má spustit reauth."""
 
 
 class CezApiError(Exception):
@@ -77,6 +92,16 @@ class CezUnexpectedLoginPageError(CezApiError):
     výběr účtu, když jeden e-mail má víc účtů (osobní + podnikatelský,
     issue #37). Struktura stránky je zalogovaná přes _describe_page().
     """
+
+
+def extract_supply_points(data: Any) -> list[dict]:
+    """Vytáhne seznam odběrných míst z odpovědi get_supply_points()."""
+    blocks = (
+        (data.get("vstelleBlocks") or {}).get("blocks", [])
+        if isinstance(data, dict)
+        else []
+    )
+    return [point for block in blocks for point in block.get("vstelles", [])]
 
 
 # Klíčová slova, podle kterých v diagnostice odhadujeme, že mezikrok po
@@ -261,12 +286,23 @@ class CezDistribuceApiClient:
         session: aiohttp.ClientSession,
         base_url: str = CEZ_DISTRIBUCE_BASE_URL,
         client_id: str = CEZ_DISTRIBUCE_CLIENT_ID,
+        portal_environment: tuple[str, str] | None = None,
     ) -> None:
         self._username = username
         self._password = password
         self._base_url = base_url
         self._client_id = client_id
         self._session = session
+
+        # Výběr prostředí portálu (environmentId, partnerId), issue #37.
+        # Předvolba z config entry; při každém (re)loginu se vybere znovu.
+        self._portal_environment = portal_environment
+        # Všechny dostupné kombinace prostředí/partner z posledního loginu,
+        # prázdné, pokud portál výběr nevyžadoval.
+        self.environment_options: list[dict[str, str]] = []
+        # True, když předvolené prostředí při posledním loginu portál
+        # nenabídl a vybralo se výchozí - volající má prostředí dohledat.
+        self.preferred_environment_missing = False
 
         redirect_url = f"{base_url}/common-api?path=/common/header"
         self._portal_host = urllib.parse.urlparse(base_url).hostname
@@ -391,11 +427,11 @@ class CezDistribuceApiClient:
                 else:
                     html = await resp.text()
                     if "Nesprávné" in html or "incorrect" in html.lower():
-                        raise CezAuthError("Nesprávné přihlašovací údaje.")
+                        raise CezInvalidCredentialsError("Nesprávné přihlašovací údaje.")
                     if not landed_on_portal and _is_login_form(html):
                         # CAS vrátil znovu přihlašovací formulář = údaje
                         # neprošly, jen s jinou hláškou než "Nesprávné".
-                        raise CezAuthError("Nesprávné přihlašovací údaje.")
+                        raise CezInvalidCredentialsError("Nesprávné přihlašovací údaje.")
                     if not landed_on_portal:
                         # Řetěz přesměrování zůstal na CAS (mepas.cez.cz) -
                         # CAS chce po uživateli ještě něco (výběr účtu,
@@ -427,6 +463,9 @@ class CezDistribuceApiClient:
                     raise
                 self._api_token = data if isinstance(data, str) else data.get("data") or data.get("token")
 
+            # Krok 3b – mezikroky landing stránky (výběr prostředí, issue #37)
+            await self._complete_landing_checks(auth_session)
+
             # Uložit cookies pro pozdější použití
             self._auth_cookies = auth_session.cookie_jar
 
@@ -439,6 +478,221 @@ class CezDistribuceApiClient:
             self._anon_cookies = anon_session.cookie_jar
 
         _LOGGER.debug("Přihlášení OK, tokeny načteny.")
+
+    # ------------------------------------------------------------------
+    # Landing mezikroky (výběr prostředí, issue #37)
+    # ------------------------------------------------------------------
+
+    async def _landing_request(
+        self, session: aiohttp.ClientSession, method: str, path: str
+    ) -> Any:
+        """Zavolá landing API a rozbalí obálku {statusCode, data} jako frontend."""
+        url = f"{self._base_url}/{path}"
+        headers = {"X-Request-Token": self._api_token} if self._api_token else {}
+        async with session.request(method, url, headers=headers) as resp:
+            if method == "POST" and resp.status < 400 and not (await resp.text()).strip():
+                # Akce bez návratové hodnoty - výsledek ověří následný check.
+                return None
+            raw = await self._read_json_response(resp, url)
+        if isinstance(raw, dict) and "statusCode" in raw:
+            if raw["statusCode"] != 200:
+                raise CezApiError(
+                    f"Landing {_safe_endpoint(url)} vrátil statusCode={raw['statusCode']}"
+                )
+            return raw.get("data")
+        return raw
+
+    async def _complete_landing_checks(self, session: aiohttp.ClientSession) -> None:
+        """Projde kontroly po přihlášení stejně jako landing stránka portálu.
+
+        Účtům bez mezikroků vrátí check anyCheckNeeded=false a nic se neděje.
+        Pokud samotný check selže, jen to zalogujeme - u účtů, kterým výběr
+        nechybí, to přihlášení rozbít nesmí.
+        """
+        self.environment_options = []
+        self.preferred_environment_missing = False
+        selected = False
+        for _ in range(LANDING_MAX_STEPS):
+            try:
+                check = await self._landing_request(session, "GET", LANDING_CHECK_PATH)
+            except (CezApiError, aiohttp.ClientError, TimeoutError) as err:
+                if selected:
+                    raise CezUnexpectedLoginPageError(
+                        f"Po výběru prostředí portálu selhala kontrola stavu: {err}"
+                    ) from err
+                _LOGGER.debug("Landing check se nepodařil, pokračuji bez něj: %r", err)
+                return
+            if not isinstance(check, dict):
+                _LOGGER.debug("Landing check vrátil neočekávaný typ %s.", type(check).__name__)
+                return
+            _LOGGER.debug(
+                "Landing check: anyCheckNeeded=%s environmentSelect=%s "
+                "accessConditions=%s spopContract=%s",
+                check.get("anyCheckNeeded"),
+                check.get("environmentSelect"),
+                check.get("accessConditions"),
+                check.get("spopContract"),
+            )
+            if check.get("anyCheckNeeded") is False:
+                if self._portal_environment and not selected:
+                    await self._reapply_preferred_environment(session)
+                return
+            if check.get("environmentSelect"):
+                await self._select_environment_during_login(session)
+                selected = True
+                continue
+            if check.get("accessConditions") or check.get("spopContract"):
+                raise CezUnexpectedLoginPageError(
+                    "Portál ČEZ Distribuce vyžaduje potvrzení podmínek používání "
+                    "nebo smlouvy. Přihlaste se jednou na dip.cezdistribuce.cz "
+                    "v prohlížeči a potvrďte je."
+                )
+            return
+        raise CezUnexpectedLoginPageError(
+            "Portál ČEZ Distribuce stále vyžaduje výběr prostředí ani po "
+            f"{LANDING_MAX_STEPS} pokusech; data by se nenačetla."
+        )
+
+    async def _reapply_preferred_environment(self, session: aiohttp.ClientSession) -> None:
+        """Prosadí uložené prostředí, i když ho portál nevyžaduje.
+
+        Pokud si portál pamatuje poslední výběr pro celého uživatele (ne jen
+        pro session), dvě entries pod jedním účtem by si jinak prostředí
+        navzájem přepínaly. Chyba se jen loguje - účtům s jedním prostředím
+        nesmí rozbít přihlášení.
+        """
+        env_id, partner_id = self._portal_environment
+        try:
+            await self._post_select_environment(session, env_id, partner_id)
+        except (CezApiError, aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("Opětovný výběr prostředí %s se nepodařil: %r", env_id, err)
+        else:
+            _LOGGER.debug("Opětovně vybráno uložené prostředí portálu %s.", env_id)
+
+    async def _post_select_environment(
+        self, session: aiohttp.ClientSession, env_id: str, partner_id: str
+    ) -> None:
+        await self._landing_request(
+            session,
+            "POST",
+            f"{LANDING_ENVIRONMENTS_PATH}/{urllib.parse.quote(env_id)}"
+            f"/{urllib.parse.quote(partner_id)}",
+        )
+
+    async def _select_environment_during_login(self, session: aiohttp.ClientSession) -> None:
+        """Načte nabídku prostředí a vybere předvolené (nebo výchozí)."""
+        data = await self._landing_request(session, "GET", LANDING_ENVIRONMENTS_PATH)
+        environments = (data or {}).get("environments", []) if isinstance(data, dict) else []
+        options: list[dict[str, str]] = []
+        selected_by_portal: dict[str, str] = {}
+        for env in environments:
+            env_id = env.get("environmentId")
+            if not env_id:
+                continue
+            if env.get("selectedPartnerId"):
+                selected_by_portal[env_id] = str(env["selectedPartnerId"])
+            for partner in env.get("partners") or []:
+                partner_id = partner.get("partnerId")
+                if partner_id:
+                    options.append(
+                        {
+                            "environment_id": env_id,
+                            "partner_id": str(partner_id),
+                            "partner_name": partner.get("partnerName") or "",
+                        }
+                    )
+        self.environment_options = options
+        _LOGGER.debug(
+            "Výběr prostředí: dostupná prostředí=%s, kombinací prostředí/partner=%d.",
+            sorted({o["environment_id"] for o in options}),
+            len(options),
+        )
+        if not options:
+            raise CezUnexpectedLoginPageError(
+                "Portál vyžaduje výběr prostředí, ale nenabídl žádného partnera."
+            )
+
+        choice = self._choose_environment(options, selected_by_portal)
+        env_id, partner_id = choice["environment_id"], choice["partner_id"]
+        _LOGGER.debug("Vybírám prostředí portálu %s.", env_id)
+        await self._post_select_environment(session, env_id, partner_id)
+        self._portal_environment = (env_id, partner_id)
+
+    def _choose_environment(
+        self, options: list[dict[str, str]], selected_by_portal: dict[str, str]
+    ) -> dict[str, str]:
+        """Předvolba z config entry, jinak prostředí dle _ENVIRONMENT_PRIORITY."""
+        if self._portal_environment:
+            env_id, partner_id = self._portal_environment
+            for option in options:
+                if option["environment_id"] == env_id and option["partner_id"] == partner_id:
+                    return option
+            _LOGGER.warning(
+                "Uložené prostředí portálu %s už není dostupné, vybírám výchozí.", env_id
+            )
+            self.preferred_environment_missing = True
+
+        def rank(option: dict[str, str]) -> tuple[int, int]:
+            env_id = option["environment_id"]
+            env_rank = (
+                _ENVIRONMENT_PRIORITY.index(env_id)
+                if env_id in _ENVIRONMENT_PRIORITY
+                else len(_ENVIRONMENT_PRIORITY)
+            )
+            # Partner, kterého má portál u prostředí předvybraného, má přednost.
+            partner_rank = 0 if selected_by_portal.get(env_id) == option["partner_id"] else 1
+            return env_rank, partner_rank
+
+        return min(options, key=rank)
+
+    @property
+    def portal_environment(self) -> tuple[str, str] | None:
+        """Aktuálně vybrané (environmentId, partnerId), pokud portál výběr vyžaduje."""
+        return self._portal_environment
+
+    async def select_environment(self, environment_id: str, partner_id: str) -> None:
+        """Přepne prostředí portálu v rámci existující session (config flow)."""
+        if (environment_id, partner_id) == self._portal_environment:
+            return
+        async with aiohttp.ClientSession(
+            cookie_jar=self._auth_cookies, timeout=REQUEST_TIMEOUT
+        ) as session:
+            await self._post_select_environment(session, environment_id, partner_id)
+        self._portal_environment = (environment_id, partner_id)
+        self.preferred_environment_missing = False
+
+    async def find_environment_for_supply_point(
+        self, uid: str, ean: str
+    ) -> tuple[str, str] | None:
+        """Najde prostředí portálu, ve kterém je vidět dané odběrné místo.
+
+        Začne aktuálně vybraným prostředím (nejčastější případ, nic se
+        nepřepíná). Pokud se nenajde nikde, vrátí None a klient zůstane
+        v původně vybraném prostředí.
+        """
+        original = self._portal_environment
+        candidates = [
+            (o["environment_id"], o["partner_id"]) for o in self.environment_options
+        ]
+        if original in candidates:
+            candidates.remove(original)
+            candidates.insert(0, original)
+        for environment in candidates:
+            try:
+                await self.select_environment(*environment)
+                points = extract_supply_points(await self.get_supply_points())
+            except CezApiError as err:
+                _LOGGER.debug("Prostředí %s nejde prohledat: %s", environment[0], err)
+                continue
+            if any(
+                (uid and p.get("uid") == uid) or (ean and p.get("ean") == ean)
+                for p in points
+            ):
+                _LOGGER.debug("Odběrné místo nalezeno v prostředí %s.", environment[0])
+                return environment
+        if original and original != self._portal_environment:
+            await self.select_environment(*original)
+        return None
 
     # ------------------------------------------------------------------
     # Přihlášení (MEPAS/AWS Gateway - appka Proud, hodinová data)

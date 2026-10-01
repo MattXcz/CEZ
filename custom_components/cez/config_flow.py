@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
@@ -10,7 +11,13 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import CezAuthError, CezDistribuceApiClient
+from .api import (
+    CezAuthError,
+    CezDistribuceApiClient,
+    CezInvalidCredentialsError,
+    CezUnexpectedLoginPageError,
+    extract_supply_points,
+)
 from .const import (
     CONF_ANLAGE,
     CONF_EAN,
@@ -18,6 +25,8 @@ from .const import (
     CONF_OM_TYPE,
     CONF_PARTNER,
     CONF_PASSWORD,
+    CONF_PORTAL_ENVIRONMENT,
+    CONF_PORTAL_PARTNER,
     CONF_PRICE_NT,
     CONF_PRICE_VT,
     CONF_USERNAME,
@@ -25,6 +34,7 @@ from .const import (
     DEFAULT_PRICE_VT,
     DOMAIN,
     OM_TYPE_CONSUMPTION,
+    PORTAL_ENVIRONMENT_NAMES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,8 +62,20 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_anlage: str = ""
         self._selected_title: str = ""
         self._selected_om_type: str = ""
+        self._selected_environment: tuple[str, str] | None = None
         self._hdo_signals: list[str] = []
         self._client: CezDistribuceApiClient | None = None
+
+    @staticmethod
+    def _login_error_key(err: Exception) -> str:
+        """Převede výjimku z přihlášení na klíč chyby formuláře."""
+        if isinstance(err, CezInvalidCredentialsError):
+            return "invalid_auth"
+        if isinstance(err, CezUnexpectedLoginPageError):
+            return "portal_action_required"
+        if not isinstance(err, CezAuthError):
+            _LOGGER.exception("Neočekávaná chyba při přihlašování", exc_info=err)
+        return "cannot_connect"
 
     async def _async_get_client(self) -> CezDistribuceApiClient:
         """Přihlásí se nejvýše jednou a vrací klienta sdíleného pro celý flow."""
@@ -81,30 +103,19 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._username = user_input[CONF_USERNAME]
             self._password = user_input[CONF_PASSWORD]
+            # Nové odeslání formuláře = možná jiné údaje, přihlásit znovu.
+            self._client = None
 
             try:
                 client = await self._async_get_client()
                 _LOGGER.debug("Config flow: načítám odběrná místa.")
-                data = await client.get_supply_points()
-                blocks = (
-                    data.get("vstelleBlocks", {}).get("blocks", [])
-                    if isinstance(data, dict)
-                    else []
-                )
-                self._supply_points = [
-                    point
-                    for block in blocks
-                    for point in block.get("vstelles", [])
-                ]
+                self._supply_points = await self._async_load_supply_points(client)
                 _LOGGER.debug(
                     "Config flow: načteno odběrných míst=%d.",
                     len(self._supply_points),
                 )
-            except CezAuthError:
-                errors["base"] = "invalid_auth"
-            except Exception:
-                _LOGGER.exception("Neočekávaná chyba při přihlašování")
-                errors["base"] = "cannot_connect"
+            except Exception as err:  # noqa: BLE001
+                errors["base"] = self._login_error_key(err)
 
             if not errors:
                 if not self._supply_points:
@@ -138,11 +149,11 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._select_point(point)
                 return await self.async_step_select_hdo_signal()
 
+        show_environment = (
+            len({p.get("_portal_environment") for p in self._supply_points}) > 1
+        )
         options = {
-            p["ean"]: (
-                p.get("adresa", {}).get("adresaComplete")
-                or p["ean"]
-            ) + f" ({p['ean']}, {p.get('typText') or p.get('typ') or '?'})"
+            p["ean"]: self._supply_point_label(p, show_environment)
             for p in self._supply_points
             if "ean" in p
         }
@@ -179,6 +190,8 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         elif not self._hdo_signals:
             try:
                 client = await self._async_get_client()
+                if self._selected_environment:
+                    await client.select_environment(*self._selected_environment)
                 signals_data = await client.get_signals(self._selected_ean)
                 signal_list = (
                     signals_data.get("signals", [])
@@ -220,14 +233,157 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     # ------------------------------------------------------------------
+    # Reauth (změněné heslo) a reconfigure (údaje, prostředí portálu)
+    # ------------------------------------------------------------------
+
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> FlowResult:
+        """Spustí HA, když portál odmítne uložené heslo."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Zadání nového hesla ke stávajícímu účtu."""
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = CezDistribuceApiClient(
+                username=entry.data[CONF_USERNAME],
+                password=user_input[CONF_PASSWORD],
+                session=async_get_clientsession(self.hass),
+            )
+            try:
+                await client.login()
+            except Exception as err:  # noqa: BLE001
+                errors["base"] = self._login_error_key(err)
+            else:
+                return self.async_update_reload_and_abort(
+                    entry, data_updates={CONF_PASSWORD: user_input[CONF_PASSWORD]}
+                )
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            description_placeholders={"username": entry.data[CONF_USERNAME]},
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Změna přihlašovacích údajů a znovu dohledání prostředí portálu.
+
+        Odběrné místo (EAN) se nemění - je na něm unique_id entry, entity
+        i dlouhodobé statistiky. Jiné odběrné místo = nová integrace.
+        """
+        entry = self._get_reconfigure_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            client = CezDistribuceApiClient(
+                username=user_input[CONF_USERNAME],
+                password=user_input[CONF_PASSWORD],
+                session=async_get_clientsession(self.hass),
+            )
+            data_updates: dict[str, Any] = {
+                CONF_USERNAME: user_input[CONF_USERNAME],
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+            }
+            try:
+                await client.login()
+                environment = None
+                if client.environment_options:
+                    environment = await client.find_environment_for_supply_point(
+                        entry.data.get("uid", ""), entry.data[CONF_EAN]
+                    )
+                    if environment is None:
+                        errors["base"] = "supply_point_not_found"
+                elif not any(
+                    p.get("ean") == entry.data[CONF_EAN]
+                    for p in extract_supply_points(await client.get_supply_points())
+                ):
+                    errors["base"] = "supply_point_not_found"
+            except Exception as err:  # noqa: BLE001
+                errors["base"] = self._login_error_key(err)
+            if not errors:
+                if environment:
+                    data_updates[CONF_PORTAL_ENVIRONMENT] = environment[0]
+                    data_updates[CONF_PORTAL_PARTNER] = environment[1]
+                return self.async_update_reload_and_abort(entry, data_updates=data_updates)
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "")
+                    ): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            description_placeholders={"ean": entry.data.get(CONF_EAN, "")},
+            errors=errors,
+        )
+
+    # ------------------------------------------------------------------
     # Pomocné metody
     # ------------------------------------------------------------------
+
+    async def _async_load_supply_points(
+        self, client: CezDistribuceApiClient
+    ) -> list[dict]:
+        """Načte odběrná místa ze všech prostředí portálu (issue #37).
+
+        Účet bez výběru prostředí (běžný případ) má environment_options
+        prázdné a načte se jen jednou. Jinak se postupně přepne do každé
+        kombinace prostředí/partner a místa se označí, odkud pocházejí.
+        """
+        if len(client.environment_options) <= 1:
+            points = extract_supply_points(await client.get_supply_points())
+            for point in points:
+                point["_portal_environment"] = client.portal_environment
+            return points
+
+        points: list[dict] = []
+        seen_eans: set[str] = set()
+        for option in client.environment_options:
+            environment = (option["environment_id"], option["partner_id"])
+            try:
+                await client.select_environment(*environment)
+                found = extract_supply_points(await client.get_supply_points())
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Config flow: nepodařilo se načíst odběrná místa v prostředí %s.",
+                    environment[0],
+                    exc_info=True,
+                )
+                continue
+            _LOGGER.debug(
+                "Config flow: prostředí %s, odběrných míst=%d.", environment[0], len(found)
+            )
+            for point in found:
+                ean = point.get("ean")
+                if ean and ean in seen_eans:
+                    continue
+                seen_eans.add(ean)
+                point["_portal_environment"] = environment
+                points.append(point)
+        return points
+
+    def _supply_point_label(self, point: dict, show_environment: bool) -> str:
+        details = [point["ean"], point.get("typText") or point.get("typ") or "?"]
+        environment = point.get("_portal_environment")
+        if show_environment and environment:
+            language = "cs" if (self.hass.config.language or "").startswith("cs") else "en"
+            names = PORTAL_ENVIRONMENT_NAMES[language]
+            details.append(names.get(environment[0], environment[0]))
+        address = point.get("adresa", {}).get("adresaComplete") or point["ean"]
+        return f"{address} ({', '.join(details)})"
 
     def _select_point(self, point: dict) -> None:
         """Uloží vybrané odběrné místo."""
         self._selected_ean = point.get("ean", "")
         self._selected_uid = point.get("uid", "")
         self._selected_partner = point.get("partner", "")
+        self._selected_environment = point.get("_portal_environment")
         self._selected_om_type = point.get("typ") or OM_TYPE_CONSUMPTION
         adresa = point.get("adresa") or {}
         base_title = (
@@ -266,6 +422,14 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "uid": self._selected_uid,
                 CONF_PARTNER: self._selected_partner,
                 CONF_ANLAGE: self._selected_anlage,
+                **(
+                    {
+                        CONF_PORTAL_ENVIRONMENT: self._selected_environment[0],
+                        CONF_PORTAL_PARTNER: self._selected_environment[1],
+                    }
+                    if self._selected_environment
+                    else {}
+                ),
                 CONF_OM_TYPE: self._selected_om_type or OM_TYPE_CONSUMPTION,
                 CONF_HDO_SIGNAL: hdo_signal,
                 CONF_PRICE_VT: price_vt,
