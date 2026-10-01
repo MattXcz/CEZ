@@ -62,6 +62,43 @@ Při výběru HDO signálu nastavíte také:
 - **Cenu VT (Kč/kWh)**
 - **Cenu NT (Kč/kWh)**
 
+### Více odběrných míst
+
+Každé odběrné místo (EAN) je v Home Assistantu samostatná položka integrace.
+Pro další EAN přidejte integraci znovu přes **Nastavení → Zařízení a služby →
+ČEZ → Přidat položku**, zadejte stejné přihlašovací údaje a v průvodci vyberte
+další odběrné místo. Pokud vyberete EAN, který už je nakonfigurovaný, průvodce
+skončí hláškou, že odběrné místo je již nakonfigurováno.
+
+### Účet s více prostředími (Domácnost a Podnikatel)
+
+Pokud máte pod jedním e-mailem více prostředí portálu, například osobní účet
+(**Domácnost**) a podnikatelský účet (**Podnikatel**), portál po přihlášení
+v prohlížeči nabídne jejich výběr. Integrace tento krok provádí automaticky:
+
+- Po přihlášení zkontroluje, zda portál výběr prostředí vyžaduje
+  (`landing?path=check`). U účtů s jedním prostředím se nic dalšího neděje.
+- V průvodci přidáním integrace načte odběrná místa ze všech prostředí a u
+  každého místa zobrazí, do kterého prostředí patří.
+- Do konfigurace uloží prostředí a partnera vybraného odběrného místa a při
+  každém dalším přihlášení vybere právě toto prostředí.
+- U položek vytvořených ve starší verzi integrace, které prostředí uložené
+  nemají, integrace při startu sama dohledá prostředí, ve kterém je jejich EAN
+  vidět, a uloží ho.
+
+Například podnikatelský účet s jedním EAN a osobní účet se třemi EAN tak budou
+v Home Assistantu čtyři položky integrace se stejnými přihlašovacími údaji.
+
+### Změna hesla a rekonfigurace
+
+- Pokud portál odmítne uložené heslo, Home Assistant nabídne **opětovné
+  přihlášení** a vyzve vás k zadání nového hesla.
+- Přes **⋮ → Překonfigurovat** u položky integrace můžete změnit e-mail
+  a heslo. Integrace přitom znovu dohledá prostředí portálu, ve kterém je
+  odběrné místo vidět. Samotné odběrné místo (EAN) změnit nelze, protože jsou
+  na něj navázané entity i dlouhodobé statistiky. Pro jiné odběrné místo
+  přidejte novou položku integrace.
+
 ## Dostupné entity
 
 | Entita | Typ | Popis |
@@ -112,7 +149,7 @@ grid_options:
   columns: 24
   rows: 3
 entities:
-  - cez:859182400708532693_consumption
+  - cez:812345678910111213_consumption
 days_to_show: 3
 period: hour
 chart_type: bar-stack
@@ -174,6 +211,14 @@ Kód `05` u výrobního EAN vrací HTTP 400. Integrace proto používá kód `06
 
 ## Řešení problémů
 
+### Chyby při přihlášení
+
+| Hláška | Význam a řešení |
+| --- | --- |
+| Nesprávné přihlašovací údaje | Portál odmítl e-mail nebo heslo. Ověřte je přihlášením na [dip.cezdistribuce.cz](https://dip.cezdistribuce.cz/). |
+| Portál ČEZ Distribuce po přihlášení vyžaduje akci | Portál chce potvrdit nové podmínky používání nebo smlouvu, případně se nepodařilo vybrat prostředí. Přihlaste se jednou na [dip.cezdistribuce.cz](https://dip.cezdistribuce.cz/) v prohlížeči, potvrďte požadovaný krok a zkuste to znovu. Už nakonfigurovaná integrace se po potvrzení obnoví sama. |
+| Odběrné místo této integrace není vidět v žádném prostředí portálu | EAN položky integrace už pod tímto účtem není dostupný v žádném prostředí. Zkontrolujte účet na portálu, případně položku překonfigurujte nebo přidejte znovu. |
+| Nepodařilo se připojit k ČEZ API | Portál nebo síť nejsou dostupné, nebo se změnil přihlašovací proces. Home Assistant nastavení integrace zkouší opakovat automaticky; pokud problém přetrvává, zapněte debug logování. |
 
 ### Debug logování
 
@@ -192,6 +237,11 @@ struktury případné HTML stránky (například názvy polí formuláře). Suro
 odpovědi, hodnoty formulářových polí, cookies ani autorizační hlavičky se do
 tohoto diagnostického záznamu nevypisují. Před odesláním logu přesto
 zkontrolujte celý výpis a odstraňte všechny osobní údaje nebo přístupové údaje.
+
+U účtů s více prostředími hledejte v logu řádky `Landing check:` a
+`Výběr prostředí:`. Ukazují, zda portál výběr vyžadoval a která prostředí
+nabídl; jména ani čísla partnerů se do nich nevypisují.
+
 
 ### Intervaly přes půlnoc
 
