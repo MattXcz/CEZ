@@ -24,15 +24,34 @@
           "price_vt": "Cena VT (Kč/kWh)",
           "price_nt": "Cena NT (Kč/kWh)"
         }
+      },
+      "reauth_confirm": {
+        "title": "Znovu přihlásit k ČEZ",
+        "description": "Portál ČEZ Distribuce odmítl uložené heslo k účtu {username}. Zadejte aktuální heslo.",
+        "data": {
+          "password": "Heslo"
+        }
+      },
+      "reconfigure": {
+        "title": "Překonfigurovat ČEZ",
+        "description": "Změna přihlašovacích údajů pro odběrné místo {ean}. Integrace zároveň znovu dohledá, ve kterém prostředí portálu (Domácnost/Podnikatel) je odběrné místo vidět.",
+        "data": {
+          "username": "Uživatelské jméno (e-mail)",
+          "password": "Heslo"
+        }
       }
     },
     "error": {
       "invalid_auth": "Nesprávné přihlašovací údaje. Zkontrolujte e-mail a heslo.",
       "cannot_connect": "Nepodařilo se připojit k ČEZ API. Zkuste to znovu.",
-      "no_supply_points": "Nebylo nalezeno žádné odběrné místo přiřazené k tomuto účtu."
+      "no_supply_points": "Nebylo nalezeno žádné odběrné místo přiřazené k tomuto účtu.",
+      "portal_action_required": "Portál ČEZ Distribuce po přihlášení vyžaduje akci (potvrzení podmínek, smlouvy nebo výběr prostředí). Přihlaste se jednou na dip.cezdistribuce.cz v prohlížeči a zkuste to znovu.",
+      "supply_point_not_found": "Odběrné místo této integrace není pod tímto účtem vidět v žádném prostředí portálu."
     },
     "abort": {
-      "already_configured": "Toto odběrné místo (EAN) je již nakonfigurováno."
+      "already_configured": "Toto odběrné místo (EAN) je již nakonfigurováno.",
+      "reauth_successful": "Přihlášení bylo obnoveno.",
+      "reconfigure_successful": "Konfigurace byla aktualizována."
     }
   }
 }
