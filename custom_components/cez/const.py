@@ -32,6 +32,34 @@ OM_TYPES_PRODUCTION = {"V", "M"}
 CONF_PARTNER = "partner"
 CONF_ANLAGE = "anlage"
 
+# Prostředí portálu (Domácnost/Podnikatel...) a partner, pod kterým je
+# odběrné místo vidět - jen u účtů, které po přihlášení musí prostředí
+# vybrat (issue #37). Chybí-li, klient vybere výchozí prostředí sám.
+CONF_PORTAL_ENVIRONMENT = "portal_environment"
+CONF_PORTAL_PARTNER = "portal_partner"
+
+# Názvy prostředí portálu dle landing aplikace (funkce environmentName).
+# Popisky voleb v config flow jsou dynamické (EAN), takže je nejde přeložit
+# přes translations/*.json - jazyk se vybírá podle hass.config.language.
+PORTAL_ENVIRONMENT_NAMES = {
+    "cs": {
+        "D": "Domácnost",
+        "P": "Podnikatel",
+        "O": "Obchodník",
+        "S": "Spolupracující partner",
+        "A": "Anonymní uživatel",
+        "PND": "Portál naměřených dat",
+    },
+    "en": {
+        "D": "Household",
+        "P": "Business",
+        "O": "Trader",
+        "S": "Cooperating partner",
+        "A": "Anonymous user",
+        "PND": "Measured data portal",
+    },
+}
+
 # Interval aktualizace dat (v sekundách)
 UPDATE_INTERVAL_SECONDS = 3600  # 1 hodina
 

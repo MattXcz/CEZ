@@ -24,15 +24,34 @@
           "price_vt": "VT price (CZK/kWh)",
           "price_nt": "NT price (CZK/kWh)"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate with ČEZ",
+        "description": "The ČEZ Distribuce portal rejected the stored password for {username}. Enter the current password.",
+        "data": {
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure ČEZ",
+        "description": "Change the credentials for supply point {ean}. The integration also re-detects which portal environment (Household/Business) the supply point belongs to.",
+        "data": {
+          "username": "Username (e-mail)",
+          "password": "Password"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid login details. Check your email and password.",
       "cannot_connect": "Could not connect to ČEZ API. Please try again.",
-      "no_supply_points": "No supply point associated with this account was found."
+      "no_supply_points": "No supply point associated with this account was found.",
+      "portal_action_required": "After login the ČEZ Distribuce portal requires an action (accepting terms, a contract or selecting an environment). Log in once at dip.cezdistribuce.cz in a browser and try again.",
+      "supply_point_not_found": "The supply point of this integration is not visible under this account in any portal environment."
     },
     "abort": {
-      "already_configured": "This supply point (EAN) is already configured."
+      "already_configured": "This supply point (EAN) is already configured.",
+      "reauth_successful": "Re-authentication was successful.",
+      "reconfigure_successful": "The configuration was updated."
     }
   }
 }

@@ -20,10 +20,11 @@ except ImportError:  # starší HA bez StatisticMeanType - has_mean/has_sum sta�
     StatisticMeanType = None  # type: ignore[assignment,misc]
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import CezApiError, CezAuthError, CezDistribuceApiClient
+from .api import CezApiError, CezAuthError, CezDistribuceApiClient, CezInvalidCredentialsError
 from .const import (
     DATA_OUTAGES,
     DATA_READINGS,
@@ -121,6 +122,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
         )
 
+    def set_partner_and_anlage(self, partner: str, anlage: str) -> None:
+        """Aktualizuje metadata potřebná pro hodinová data."""
+        self._partner = partner
+        self._anlage = anlage
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Stáhne všechna potřebná data z ČEZ API."""
         previous_data = self.data or {}
@@ -131,6 +137,9 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             nonlocal all_fresh
             try:
                 merged_data[key] = await fetcher()
+            except CezInvalidCredentialsError as err:
+                # Heslo se změnilo - HA nabídne reauth flow.
+                raise ConfigEntryAuthFailed(str(err)) from err
             except CezAuthError as err:
                 all_fresh = False
                 if key in previous_data:
@@ -174,7 +183,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await _load_dataset(DATA_READINGS, lambda: self._client.get_readings(self._uid))
                 await _load_dataset(DATA_SIGNALS, lambda: self._client.get_signals(self._ean))
             await _load_dataset(DATA_OUTAGES, lambda: self._client.get_outages(self._ean))
-        except UpdateFailed:
+        except (UpdateFailed, ConfigEntryAuthFailed):
             raise
 
         if not merged_data:
