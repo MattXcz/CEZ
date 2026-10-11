@@ -181,7 +181,7 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
         # HDO/tarify se týkají jen běžné spotřeby ("S") - odběrné místo
-        # výroby/mikrozdroje (FVE, typ "V"/"M") žádný spínací signál nemá,
+        # výroby/mikrozdroje (FVE, typ "V"/"M"/"B") žádný spínací signál nemá,
         # zbytečně by se jen logovala chyba/prázdný výsledek. Rovnou
         # přeskočíme na vytvoření entry bez HDO signálu (viz issue #24 -
         # dodávka do sítě).
