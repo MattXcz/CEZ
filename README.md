@@ -120,7 +120,7 @@ v Home Assistantu čtyři položky integrace se stejnými přihlašovacími úda
 
 ### Výroba a mikrozdroj
 
-Pokud přidáte odběrné místo typu **Výroba** nebo **Mikrozdroj** (FVE; `typ` `V` nebo `M` z `get_supply_points`), vytvoří se jiná sada entit:
+Pokud přidáte odběrné místo typu **Výroba**, **Mikrozdroj** nebo **Výrobna bez licence** (FVE; `typ` `V`, `M` nebo `B` z `get_supply_points`), vytvoří se jiná sada entit:
 
 - nevytvoří se HDO a tarifové senzory ani `sensor.spotreba_vt` a `sensor.spotreba_nt`, protože se netýkají dodávky do sítě;
 - místo `sensor.celkova_spotreba` se vytvoří `sensor.celkova_dodavka_do_site`;
@@ -169,7 +169,7 @@ Data se aktualizují **každou hodinu**. Odečty elektroměru jsou na straně Č
 
 ## Celková dodávka do sítě
 
-Pokud máte FVE nebo mikrozdroj, dodávka (přetok) do sítě je vedena jako samostatné odběrné místo s jiným EAN. V odpovědi `get_supply_points` má toto místo `typ` `V` (**Výroba**) nebo `M` (**Mikrozdroj**).
+Pokud máte FVE nebo mikrozdroj, dodávka (přetok) do sítě je vedena jako samostatné odběrné místo s jiným EAN. V odpovědi `get_supply_points` má toto místo `typ` `V` (**Výroba**), `M` (**Mikrozdroj**) nebo `B` (**Výrobna bez licence**).
 
 Integraci přidejte znovu přes **Nastavení → Zařízení a služby → ČEZ → Přidat zařízení** a v průvodci vyberte výrobní odběrné místo. Vytvoří se samostatná položka konfigurace:
 
