@@ -15,14 +15,15 @@ DEFAULT_PRICE_NT = 2.60
 # Typ odběrného místa (pole "typ" v odpovědi get_supply_points, viz enum
 # "typyOM"). Běžná spotřeba je "S" - integrace se historicky chovala, jako
 # by žádný jiný typ neexistoval. Výroba/mikrozdroj (FVE apod.) má vlastní
-# odběrné místo (jiný EAN) typu "V"/"M" - HDO signály a cenové tarify se ho
+# odběrné místo (jiný EAN) typu "V" (Výroba), "M" (Mikrozdroj) nebo "B"
+# (Výrobna bez licence) - HDO signály a cenové tarify se ho
 # netýkají, jde o dodávku (přetok) aktivní energie DO sítě, ne odběr z ní
 # (viz README a issue #24). Chybějící/neznámý "typ" (staré config entries
 # založené před touto verzí) se bere jako běžná spotřeba, aby se chování
 # stávajících instalací nezměnilo.
 CONF_OM_TYPE = "om_type"
 OM_TYPE_CONSUMPTION = "S"
-OM_TYPES_PRODUCTION = {"V", "M"}
+OM_TYPES_PRODUCTION = {"V", "M", "B"}
 
 # Nové konfigurační klíče (hodinová/15min spotřeba přes MEPAS/AWS gateway).
 # "partner" je dostupný zdarma ze stejné odpovědi jako "ean"/"uid"
@@ -121,7 +122,7 @@ PND_ASSEMBLY_15MIN = "03"
 # než hodina.
 PND_ASSEMBLY_CODE = PND_ASSEMBLY_HOURLY
 
-# Dodávka do sítě (výroba/mikrozdroj, typ V/M) - MEPAS gateway pro ni
+# Dodávka do sítě (výroba/mikrozdroj, typ V/M/B) - MEPAS gateway pro ni
 # nabízí samostatnou, SUDOU sadu assemblyCode, zjevně jako protějšek
 # liché sady u spotřeby výše (issue #24, ověřeno živě na reálném účtu
 # s mikrozdrojem, pnd/status vrátil pro spotřebu 01/03/05/07/09/11 a pro
@@ -159,7 +160,7 @@ PND_INTERVAL_MINUTES = PND_INTERVAL_MINUTES_BY_ASSEMBLY[PND_ASSEMBLY_CODE]
 def pnd_assembly_code_for(om_type: str) -> str:
     """Vrátí správný assemblyCode pro pnd/data podle typu odběrného místa.
 
-    Spotřeba (typ "S") a dodávka do sítě (typ "V"/"M") mají u MEPAS
+    Spotřeba (typ "S") a dodávka do sítě (typ "V"/"M"/"B") mají u MEPAS
     gateway oddělené číselné řady - viz komentář u
     PND_ASSEMBLY_HOURLY_PRODUCTION (issue #24)."""
     return (
