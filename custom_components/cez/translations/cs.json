@@ -46,7 +46,8 @@
       "cannot_connect": "Nepodařilo se připojit k ČEZ API. Zkuste to znovu.",
       "no_supply_points": "Nebylo nalezeno žádné odběrné místo přiřazené k tomuto účtu.",
       "portal_action_required": "Portál ČEZ Distribuce po přihlášení vyžaduje akci (potvrzení podmínek, smlouvy nebo výběr prostředí). Přihlaste se jednou na dip.cezdistribuce.cz v prohlížeči a zkuste to znovu.",
-      "supply_point_not_found": "Odběrné místo této integrace není pod tímto účtem vidět v žádném prostředí portálu."
+      "supply_point_not_found": "Odběrné místo této integrace není pod tímto účtem vidět v žádném prostředí portálu.",
+      "portal_no_data_access": "Přihlášení proběhlo, ale portál ČEZ Distribuce pro tento účet nevrací žádná odběrná místa. Ověřte, že po přihlášení na dip.cezdistribuce.cz v prohlížeči vidíte svá odběrná místa. Samotný účet Můj ČEZ (ČEZ Prodej) nestačí a odběrné místo musí ležet v distribučním území ČEZ Distribuce (ne PREdistribuce ani EG.D)."
     },
     "abort": {
       "already_configured": "Toto odběrné místo (EAN) je již nakonfigurováno.",

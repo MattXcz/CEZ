@@ -94,6 +94,18 @@ class CezUnexpectedLoginPageError(CezApiError):
     """
 
 
+class CezPortalNoDataAccessError(CezApiError):
+    """Přihlášení prošlo, ale portál pro účet nevrací data odběrných míst.
+
+    Vyhledání odběrných míst vrací i po novém přihlášení HTTP 200 s prázdným
+    text/html tělem, přestože landing check žádný mezikrok nevyžaduje
+    (issue #41). Typicky účet ČEZ ID nemá v portálu ČEZ Distribuce přiřazené
+    žádné odběrné místo - např. jde jen o účet Můj ČEZ (ČEZ Prodej), odběrné
+    místo leží v jiné distribuční oblasti (PREdistribuce, EG.D), nebo ještě
+    nebylo v portálu přidané.
+    """
+
+
 def extract_supply_points(data: Any) -> list[dict]:
     """Vytáhne seznam odběrných míst z odpovědi get_supply_points()."""
     blocks = (
@@ -207,11 +219,20 @@ def _log_unexpected_page(step: str, url: str, status: int, html: str) -> dict[st
 class _InvalidJsonResponse(CezApiError):
     """Odpověď API nebyla validní JSON."""
 
-    def __init__(self, url: str, status: int, content_type: str, preview: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        status: int,
+        content_type: str,
+        preview: str,
+        *,
+        empty_body: bool = False,
+    ) -> None:
         self.url = url
         self.status = status
         self.content_type = content_type
         self.preview = preview
+        self.empty_body = empty_body
         super().__init__(
             f"Neplatná JSON odpověď z {url} "
             f"(HTTP {status}, Content-Type: {content_type}): {preview}"
@@ -527,11 +548,13 @@ class CezDistribuceApiClient:
                 return
             _LOGGER.debug(
                 "Landing check: anyCheckNeeded=%s environmentSelect=%s "
-                "accessConditions=%s spopContract=%s",
+                "accessConditions=%s spopContract=%s redirectUrl=%s keys=%s",
                 check.get("anyCheckNeeded"),
                 check.get("environmentSelect"),
                 check.get("accessConditions"),
                 check.get("spopContract"),
+                _safe_endpoint(str(check["redirectUrl"])) if check.get("redirectUrl") else None,
+                sorted(check.keys()),
             )
             if check.get("anyCheckNeeded") is False:
                 if self._portal_environment and not selected:
@@ -934,7 +957,9 @@ class CezDistribuceApiClient:
         content_type = resp.headers.get("Content-Type", "neznámý")
         if not text.strip():
             self._log_invalid_json_response(resp, text)
-            raise _InvalidJsonResponse(url, resp.status, content_type, "prázdná odpověď")
+            raise _InvalidJsonResponse(
+                url, resp.status, content_type, "prázdná odpověď", empty_body=True
+            )
         try:
             return json.loads(text)
         except json.JSONDecodeError as err:
@@ -1021,10 +1046,20 @@ class CezDistribuceApiClient:
 
     async def get_supply_points(self) -> dict:
         """Vrátí seznam odběrných míst."""
-        return await self._auth_post(
-            "vyhledani-om?path=/vyhledaniom/zakladniInfo/50/PREHLED_OM_CELEK",
-            json={"nekontrolovatPrislusnostOM": False},
-        )
+        try:
+            return await self._auth_post(
+                "vyhledani-om?path=/vyhledaniom/zakladniInfo/50/PREHLED_OM_CELEK",
+                json={"nekontrolovatPrislusnostOM": False},
+            )
+        except _InvalidJsonResponse as err:
+            # _request_with_retry už jednou znovu přihlásil; prázdné HTML
+            # i potom = portál účtu data nevydá (issue #41).
+            if err.looks_like_portal_html and err.empty_body:
+                raise CezPortalNoDataAccessError(
+                    "Přihlášení proběhlo, ale portál ČEZ Distribuce pro tento účet "
+                    "nevrací žádná odběrná místa (prázdná odpověď)."
+                ) from err
+            raise
 
     async def get_supply_point_detail(self, uid: str) -> dict:
         """Vrátí detail odběrného místa."""

@@ -15,6 +15,7 @@ from .api import (
     CezAuthError,
     CezDistribuceApiClient,
     CezInvalidCredentialsError,
+    CezPortalNoDataAccessError,
     CezUnexpectedLoginPageError,
     extract_supply_points,
 )
@@ -73,6 +74,9 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return "invalid_auth"
         if isinstance(err, CezUnexpectedLoginPageError):
             return "portal_action_required"
+        if isinstance(err, CezPortalNoDataAccessError):
+            _LOGGER.warning("%s", err)
+            return "portal_no_data_access"
         if not isinstance(err, CezAuthError):
             _LOGGER.exception("Neočekávaná chyba při přihlašování", exc_info=err)
         return "cannot_connect"
