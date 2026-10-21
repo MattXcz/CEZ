@@ -46,7 +46,8 @@
       "cannot_connect": "Could not connect to ČEZ API. Please try again.",
       "no_supply_points": "No supply point associated with this account was found.",
       "portal_action_required": "After login the ČEZ Distribuce portal requires an action (accepting terms, a contract or selecting an environment). Log in once at dip.cezdistribuce.cz in a browser and try again.",
-      "supply_point_not_found": "The supply point of this integration is not visible under this account in any portal environment."
+      "supply_point_not_found": "The supply point of this integration is not visible under this account in any portal environment.",
+      "portal_no_data_access": "Login succeeded, but the ČEZ Distribuce portal returns no supply points for this account. Check that you can see your supply points after logging in at dip.cezdistribuce.cz in a browser. A Můj ČEZ (ČEZ Prodej) account alone is not enough, and the supply point must be in the ČEZ Distribuce area (not PREdistribuce or EG.D)."
     },
     "abort": {
       "already_configured": "This supply point (EAN) is already configured.",

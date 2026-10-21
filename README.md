@@ -218,6 +218,7 @@ Kód `05` u výrobního EAN vrací HTTP 400. Integrace proto používá kód `06
 | Nesprávné přihlašovací údaje | Portál odmítl e-mail nebo heslo. Ověřte je přihlášením na [dip.cezdistribuce.cz](https://dip.cezdistribuce.cz/). |
 | Portál ČEZ Distribuce po přihlášení vyžaduje akci | Portál chce potvrdit nové podmínky používání nebo smlouvu, případně se nepodařilo vybrat prostředí. Přihlaste se jednou na [dip.cezdistribuce.cz](https://dip.cezdistribuce.cz/) v prohlížeči, potvrďte požadovaný krok a zkuste to znovu. Už nakonfigurovaná integrace se po potvrzení obnoví sama. |
 | Odběrné místo této integrace není vidět v žádném prostředí portálu | EAN položky integrace už pod tímto účtem není dostupný v žádném prostředí. Zkontrolujte účet na portálu, případně položku překonfigurujte nebo přidejte znovu. |
+| Přihlášení proběhlo, ale portál nevrací žádná odběrná místa | Účet se přihlásil, ale portál ČEZ Distribuce k němu nemá přiřazené žádné odběrné místo. Přihlaste se na [dip.cezdistribuce.cz](https://dip.cezdistribuce.cz/) v prohlížeči a ověřte, že svá odběrná místa vidíte, případně je přidejte. Samotný účet Můj ČEZ (ČEZ Prodej) nestačí a odběrné místo musí ležet v distribučním území ČEZ Distribuce, ne PREdistribuce (Praha) ani EG.D (jižní Morava, jižní Čechy). |
 | Nepodařilo se připojit k ČEZ API | Portál nebo síť nejsou dostupné, nebo se změnil přihlašovací proces. Home Assistant nastavení integrace zkouší opakovat automaticky; pokud problém přetrvává, zapněte debug logování. |
 
 ### Debug logování
