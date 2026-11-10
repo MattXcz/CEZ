@@ -2,6 +2,7 @@
   "domain": "cez",
   "name": "ČEZ",
   "after_dependencies": ["recorder"],
+  "categories": ["energy.meters_monitoring"],
   "codeowners": ["@mattxcz"],
   "config_flow": true,
   "dependencies": [],

@@ -51,6 +51,8 @@ async def _async_enrich_partner_and_anlage(
 
     if partner and anlage:
         return
+    # První refresh mohl UID obnovit (issue #43).
+    uid = coordinator.uid or uid
 
     try:
         if not partner:
@@ -189,8 +191,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     partner = entry.data.get(CONF_PARTNER, "")
     anlage = entry.data.get(CONF_ANLAGE, "")
 
+    def _store_new_uid(new_uid: str) -> None:
+        # Portál pro stejný EAN vrátil jiné UID (issue #43) - coordinator
+        # ho volá až po úspěšném načtení odečtů s novým UID.
+        hass.config_entries.async_update_entry(entry, data={**entry.data, "uid": new_uid})
+
     coordinator = CezDistribuceCoordinator(
-        hass, client, ean=ean, uid=uid, partner=partner, anlage=anlage, om_type=om_type
+        hass,
+        client,
+        ean=ean,
+        uid=uid,
+        partner=partner,
+        anlage=anlage,
+        om_type=om_type,
+        on_uid_changed=_store_new_uid,
     )
     await coordinator.async_config_entry_first_refresh()
     _LOGGER.debug("První načtení dat config entry dokončeno.")

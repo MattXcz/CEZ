@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import (
@@ -24,7 +24,13 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import CezApiError, CezAuthError, CezDistribuceApiClient, CezInvalidCredentialsError
+from .api import (
+    CezApiError,
+    CezAuthError,
+    CezDistribuceApiClient,
+    CezInvalidCredentialsError,
+    CezSupplyPointUidRejectedError,
+)
 from .const import (
     DATA_OUTAGES,
     DATA_READINGS,
@@ -68,8 +74,12 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         partner: str = "",
         anlage: str = "",
         om_type: str = OM_TYPE_CONSUMPTION,
+        on_uid_changed: Callable[[str], None] | None = None,
     ) -> None:
         self._client = client
+        # Uloží nově dohledané UID do config entry (issue #43) - viz
+        # _async_fetch_readings.
+        self._on_uid_changed = on_uid_changed
         self._ean = ean
         self._uid = uid
         self._partner = partner
@@ -135,6 +145,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
         )
 
+    @property
+    def uid(self) -> str:
+        """Aktuálně používané UID odběrného místa (může se změnit, issue #43)."""
+        return self._uid
+
     def set_partner_and_anlage(self, partner: str, anlage: str) -> None:
         """Aktualizuje metadata potřebná pro hodinová data."""
         self._partner = partner
@@ -193,7 +208,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # hodnoty do kWh shodné se spotřebním EAN), takže by šlo
                 # jen o zbytečné volání API a zavádějící entity; HDO
                 # signály výrobní OM nemá vůbec.
-                await _load_dataset(DATA_READINGS, lambda: self._client.get_readings(self._uid))
+                await _load_dataset(DATA_READINGS, self._async_fetch_readings)
                 await _load_dataset(DATA_SIGNALS, lambda: self._client.get_signals(self._ean))
             await _load_dataset(DATA_OUTAGES, lambda: self._client.get_outages(self._ean))
         except (UpdateFailed, ConfigEntryAuthFailed):
@@ -236,6 +251,45 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
 
         return merged_data
+
+    async def _async_fetch_readings(self) -> Any:
+        """Historie odečtů; při odmítnutém UID (ZDIP-360) dohledá aktuální
+        UID podle EAN a dotaz zopakuje (issue #43).
+
+        Portál může pro stejný EAN časem vrátit jiné UID, než je uložené
+        v config entry. Nové UID se použije jen při jednoznačné shodě EAN
+        a uloží se až po úspěšném načtení odečtů s ním."""
+        try:
+            return await self._client.get_readings(self._uid)
+        except CezSupplyPointUidRejectedError as err:
+            _LOGGER.info(
+                "Portál odmítl uložené UID odběrného místa (ZDIP-360), "
+                "dohledávám aktuální UID podle EAN (issue #43)."
+            )
+            new_uid = await self._client.resolve_supply_point_uid(self._ean)
+            if not new_uid:
+                raise CezApiError(
+                    "Portál odmítl uložené UID odběrného místa (ZDIP-360) a "
+                    "podle EAN se nepodařilo jednoznačně dohledat nové. "
+                    "Zkontrolujte odběrné místo na dip.cezdistribuce.cz, "
+                    "případně integraci překonfigurujte (issue #43)."
+                ) from err
+            if new_uid == self._uid:
+                _LOGGER.warning(
+                    "Portál vrací pro EAN stejné UID, a přesto ho u odečtů "
+                    "odmítá (ZDIP-360) - nejspíš chybí oprávnění k odběrnému "
+                    "místu (issue #43)."
+                )
+                raise
+            readings = await self._client.get_readings(new_uid)
+            self._uid = new_uid
+            _LOGGER.warning(
+                "UID odběrného místa se na portálu změnilo; odečty se s novým "
+                "UID načetly a nové UID ukládám do konfigurace (issue #43)."
+            )
+            if self._on_uid_changed is not None:
+                self._on_uid_changed(new_uid)
+            return readings
 
     # ------------------------------------------------------------------
     # Hodinová/15min spotřeba (appka Proud, MEPAS/AWS Gateway) jako

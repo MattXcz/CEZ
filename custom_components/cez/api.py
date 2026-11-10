@@ -94,6 +94,19 @@ class CezUnexpectedLoginPageError(CezApiError):
     """
 
 
+class CezSupplyPointUidRejectedError(CezApiError):
+    """Portál odmítl UID odběrného místa (HTTP 400, ZDIP-360 „EAN neexistuje
+    nebo nemáte oprávnění“) - issue #43.
+
+    Portál může pro stejný EAN časem vrátit jiné UID; s uloženým starým
+    UID pak dotazy na detail/odečty selhávají, i když přihlášení i
+    odběrné místo jsou v pořádku."""
+
+
+# Kód/text chyby portálu pro neplatné UID odběrného místa (issue #43).
+_UID_REJECTED_MARKERS = ("ZDIP-360", "EAN neexistuje")
+
+
 class CezPortalNoDataAccessError(CezApiError):
     """Přihlášení prošlo, ale portál pro účet nevrací data odběrných míst.
 
@@ -952,6 +965,11 @@ class CezDistribuceApiClient:
             len(text),
             len(resp.history),
         )
+        if resp.status == 400 and any(m in text for m in _UID_REJECTED_MARKERS):
+            raise CezSupplyPointUidRejectedError(
+                f"HTTP 400 pro {_safe_endpoint(url)}: portál nezná UID odběrného "
+                f"místa (ZDIP-360): {text[:200]}"
+            )
         if resp.status >= 400:
             raise CezApiError(f"HTTP {resp.status} pro {url}: {text[:200] or 'prázdná odpověď'}")
         content_type = resp.headers.get("Content-Type", "neznámý")
@@ -1060,6 +1078,23 @@ class CezDistribuceApiClient:
                     "nevrací žádná odběrná místa (prázdná odpověď)."
                 ) from err
             raise
+
+    async def resolve_supply_point_uid(self, ean: str) -> str | None:
+        """Aktuální UID odběrného místa podle EAN v právě vybraném prostředí
+        portálu (issue #43). Vrací None, pokud EAN chybí nebo shoda není
+        jednoznačná (víc různých UID pro stejný EAN)."""
+        uids = {
+            str(p.get("uid"))
+            for p in extract_supply_points(await self.get_supply_points())
+            if ean and p.get("ean") == ean and p.get("uid")
+        }
+        if len(uids) != 1:
+            _LOGGER.debug(
+                "Dohledání UID podle EAN: nalezeno %d kandidátů, nepoužívám.",
+                len(uids),
+            )
+            return None
+        return uids.pop()
 
     async def get_supply_point_detail(self, uid: str) -> dict:
         """Vrátí detail odběrného místa."""
