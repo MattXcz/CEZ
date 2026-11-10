@@ -150,9 +150,21 @@ PND_ASSEMBLY_HOURLY_PRODUCTION = "06"
 # VT, NT - to, co ukazuje web Portálu naměřených dat). Podle reportu
 # z #32 ji pnd/status nabízí jen části odběrných míst (u jiných vrací
 # HTTP 400) a schéma odpovědi zatím neznáme - integrace ji proto zatím
-# jen jednorázově stáhne a zaloguje (coordinator._async_probe_daily_registers),
+# jen jednorázově stáhne a zaloguje (coordinator._async_probe_assembly_code),
 # když ji pnd/status nabízí.
 PND_ASSEMBLY_DAILY_REGISTERS = "17"
+
+# Kódy, jejichž význam známe (hodinová energie, 15min výkon) - ostatní
+# kódy, které pnd/status nabídne, integrace jednou po startu "osahá"
+# vzorkem a zaloguje (issue #32 - hledáme denní registry VT/NT u
+# odběrných míst s měřením typu C, kde sestava 17 není; u spotřeby
+# zbývají 01/07/09/11, u výroby 04/08/10/12).
+PND_KNOWN_ASSEMBLY_CODES = (
+    PND_ASSEMBLY_HOURLY,
+    PND_ASSEMBLY_15MIN,
+    PND_ASSEMBLY_HOURLY_PRODUCTION,
+    "02",  # 15min výkon dodávky (issue #24)
+)
 
 # Mapování na skutečný krok dat v minutách - používá ho i
 # pnd_processing.infer_interval_minutes() jako fallback, kdyby se krok

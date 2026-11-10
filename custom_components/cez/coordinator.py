@@ -41,6 +41,7 @@ from .const import (
     OM_TYPES_PRODUCTION,
     PND_ASSEMBLY_DAILY_REGISTERS,
     PND_INTERVAL_MINUTES_BY_ASSEMBLY,
+    PND_KNOWN_ASSEMBLY_CODES,
     PND_TRAILING_SAFETY_DAYS,
     UPDATE_INTERVAL_SECONDS,
     pnd_assembly_code_for,
@@ -552,7 +553,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Rozdělení přírůstku na VT/NT tu záměrně není - hodinová data
         (assemblyCode 05) tarif nerozlišují. Přesné denní registry VT/NT
         by měla dávat PND sestava 17, kterou ale ČEZ nabízí jen části
-        odběrných míst (viz _async_probe_daily_registers)."""
+        odběrných míst (viz _async_probe_assembly_code, issue #32)."""
         if not isinstance(readings, list) or not readings:
             self.meter_estimate = None
             return
@@ -626,15 +627,15 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             base_kwh + increment,
         )
 
-    async def _async_probe_daily_registers(self) -> None:
-        """Jednorázově stáhne vzorek PND sestavy 17 (denní stavy registrů)
-        a zaloguje jeho strukturu (issue #40, #32).
+    async def _async_probe_assembly_code(self, code: str) -> str:
+        """Jednorázově stáhne 3denní vzorek pnd/data pro assemblyCode, jehož
+        význam zatím neznáme, a zaloguje strukturu i syrovou odpověď
+        (issue #32, #40).
 
-        Sestava 17 by měla vracet denní stavy elektroměru včetně VT/NT,
-        ale schéma odpovědi zatím neznáme a ČEZ ji nenabízí všem
-        odběrným místům (u některých vrací HTTP 400). Volá se jen, když
-        ji pnd/status nabízí. Hodnoty se nikam nepoužívají - jde jen
-        o podklad pro budoucí senzory VT/NT."""
+        Cíl: zjistit, která sestava nese denní stavy registrů VT/NT (web
+        Portálu naměřených dat je ukazuje i u měření typu C, ale sestavu
+        17 pro ně pnd/status nenabízí - #32). Hodnoty se nikam
+        nepoužívají. Vrací krátké shrnutí pro diagnostickou entitu."""
         now = datetime.now(timezone.utc)
         try:
             data = await self._client.get_pnd_data(
@@ -642,18 +643,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 ean=self._ean,
                 date_from=(now - timedelta(days=3)).strftime("%Y-%m-%dT00:00:00.000Z"),
                 date_to=now.strftime("%Y-%m-%dT00:00:00.000Z"),
-                assembly_code=PND_ASSEMBLY_DAILY_REGISTERS,
+                assembly_code=code,
             )
         except Exception as err:  # noqa: BLE001
-            _LOGGER.info(
-                "pnd/data sestava %s (denní registry VT/NT) selhala: %s "
-                "(issue #40).",
-                PND_ASSEMBLY_DAILY_REGISTERS,
-                err,
-            )
-            if self.pnd_status_info is not None:
-                self.pnd_status_info["daily_registers_error"] = str(err)
-            return
+            _LOGGER.info("pnd/data sonda assemblyCode=%s selhala: %s (issue #32).", code, err)
+            return f"chyba: {str(err)[:80]}"
 
         series = data if isinstance(data, list) else [data]
         summary = []
@@ -662,24 +656,29 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 summary.append(type(item).__name__)
                 continue
             values = item.get("values")
+            sample = values[:2] if isinstance(values, list) else None
             summary.append(
                 {
                     "keys": sorted(item.keys()),
                     "name": item.get("name"),
                     "unit": item.get("unit"),
                     "values": len(values) if isinstance(values, list) else None,
+                    "sample": sample,
                 }
             )
         _LOGGER.info(
-            "pnd/data sestava %s (denní registry VT/NT, issue #40): %d řad, "
-            "struktura=%s; syrová odpověď (zkráceno na 4000 znaků): %s",
-            PND_ASSEMBLY_DAILY_REGISTERS,
+            "pnd/data sonda assemblyCode=%s (issue #32): %d řad, struktura=%s; "
+            "syrová odpověď (zkráceno na 3000 znaků): %s",
+            code,
             len(series),
-            summary,
-            json.dumps(data, ensure_ascii=False, default=str)[:4000],
+            json.dumps(summary, ensure_ascii=False, default=str),
+            json.dumps(data, ensure_ascii=False, default=str)[:3000],
         )
-        if self.pnd_status_info is not None:
-            self.pnd_status_info["daily_registers_series"] = len(series)
+        parts = [
+            f"{s.get('values')}x {s.get('unit') or '?'}" if isinstance(s, dict) else str(s)
+            for s in summary
+        ]
+        return f"{len(series)} řad: " + ", ".join(parts)
 
     async def _async_find_first_statistic_start(
         self, recorder: Any, statistic_id: str, now: datetime
@@ -798,8 +797,21 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         daily_offered = bool(codes_found) and PND_ASSEMBLY_DAILY_REGISTERS in codes_found
         self.pnd_status_info["daily_registers_offered"] = daily_offered
-        if daily_offered and not self._is_production:
-            await self._async_probe_daily_registers()
+        self.pnd_status_info["measurement_types"] = _extract_measurement_types(status)
+
+        # Sondy sestav s neznámým významem (issue #32) - jedno volání na
+        # kód, jen jednou za běh HA. Známé kódy (používaný hodinový a
+        # 15min výkon) se přeskakují.
+        probe_codes = [
+            code
+            for code in (codes_found or [])
+            if code not in (self._assembly_code, *PND_KNOWN_ASSEMBLY_CODES)
+        ]
+        if probe_codes:
+            probes: dict[str, str] = {}
+            for code in probe_codes:
+                probes[code] = await self._async_probe_assembly_code(code)
+            self.pnd_status_info["probes"] = probes
 
         if codes_found and not code_offered:
             _LOGGER.warning(
@@ -838,6 +850,17 @@ def _extract_assembly_codes(raw: Any) -> list[str] | None:
 
     _walk(raw)
     return sorted(found) if found else None
+
+
+def _extract_measurement_types(raw: Any) -> list[str] | None:
+    """Typ a kategorie měření z pnd/status (např. "C/C1") - issue #32:
+    sestava 17 (denní registry) se zdá dostupná jen u některých typů."""
+    found: set[str] = set()
+    items = raw.get("supplyPointList") if isinstance(raw, dict) else None
+    for item in items or []:
+        if isinstance(item, dict) and (item.get("typMereni") or item.get("kategorieMereni")):
+            found.add(f"{item.get('typMereni') or '?'}/{item.get('kategorieMereni') or '-'}")
+    return sorted(found) or None
 
 
 def _stat_row_start(row: dict[str, Any]) -> datetime | None:

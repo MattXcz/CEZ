@@ -62,6 +62,8 @@ Při výběru HDO signálu nastavíte také:
 - **Cenu VT (Kč/kWh)**
 - **Cenu NT (Kč/kWh)**
 
+Ceny můžete kdykoliv změnit přes **Nastavení → Zařízení a služby → ČEZ → Konfigurovat** (ikona ozubeného kola u položky odběrného místa). Po uložení se integrace sama znovu načte. U odběrných míst typu výroba/mikrozdroj tato volba není, protože nemají cenový senzor.
+
 ### Více odběrných míst
 
 Každé odběrné místo (EAN) je v Home Assistantu samostatná položka integrace.
@@ -109,7 +111,7 @@ v Home Assistantu čtyři položky integrace se stejnými přihlašovacími úda
 | `sensor.spotreba_nt` | Senzor (kWh) | Stav elektroměru v nízkém tarifu z posledního odečtu |
 | `sensor.celkova_spotreba` | Senzor (kWh) | Celkový odběr aktivní energie z posledního odečtu – součet VT a NT |
 | `sensor.odhadovany_stav_elektromeru` | Senzor (kWh) | Poslední odečet (VT+NT) + hodinová spotřeba od data odečtu; jen u chytrých elektroměrů |
-| `sensor.aktualni_cena` | Senzor (Kč/kWh) | Aktuální cena podle stavu HDO; ceny VT a NT se nastavují při konfiguraci |
+| `sensor.aktualni_cena` | Senzor (Kč/kWh) | Aktuální cena podle stavu HDO; ceny VT a NT se nastavují při přidání a lze je změnit přes **Konfigurovat** |
 | `sensor.vysoky_tarif_start` | Senzor | Začátek aktuálního nebo nejbližšího období VT |
 | `sensor.vysoky_tarif_konec` | Senzor | Konec aktuálního nebo nejbližšího období VT |
 | `sensor.nizky_tarif_start` | Senzor | Začátek aktuálního nebo nejbližšího období NT |
@@ -138,7 +140,7 @@ Průběžnou spotřebu najdete:
 - ve statistice `cez:<ean>_consumption` (hodinová data, viz [Hodinová spotřeba](#hodinová-spotřeba)) – bez rozlišení VT/NT,
 - v senzoru `sensor.odhadovany_stav_elektromeru`, který k poslednímu odečtu (VT+NT) přičítá hodinovou spotřebu od data odečtu. Posouvá se zhruba jednou denně podle toho, jak ČEZ doplňuje hodinová data. Atributy ukazují použitý odečet, přírůstek od odečtu a konec hodinových dat.
 
-Rozdělení průběžné spotřeby na VT a NT zatím není možné, protože hodinová data tarif nerozlišují. Pokud ČEZ pro odběrné místo nabízí denní registry (sestava 17 v `pnd/status`), integrace jednou po startu zaloguje vzorek odpovědi a diagnostická entita `sensor.hodinova_data_spotreby_k` to ukáže v atributu `pnd_denni_registry_17_nabizeny`.
+Rozdělení průběžné spotřeby na VT a NT zatím není možné, protože hodinová data tarif nerozlišují. Denní registry VT/NT nabízí API aplikace Proud jen u části odběrných míst (sestava 17); u měření typu C ji `pnd/status` nenabízí, i když web Portálu naměřených dat registry ukazuje. Integrace proto jednou po startu stáhne malý vzorek každé sestavy, kterou `pnd/status` nabídne a jejíž význam zatím neznáme, a zaloguje ho (řádky `pnd/data sonda assemblyCode=…`). Diagnostická entita `sensor.hodinova_data_spotreby_k` ukazuje typ měření (`pnd_typ_mereni`), dostupnost sestavy 17 (`pnd_denni_registry_17_nabizeny`) a krátké shrnutí sond (`pnd_sondy_kodu`).
 
 ## Hodinová spotřeba
 
