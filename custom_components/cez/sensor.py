@@ -184,8 +184,14 @@ class CezCurrentPriceSensor(CezTimeAwareSensor):
     ) -> None:
         super().__init__(coordinator)
         self._hdo_signal = hdo_signal
-        self._price_vt = float(entry.data.get(CONF_PRICE_VT, DEFAULT_PRICE_VT))
-        self._price_nt = float(entry.data.get(CONF_PRICE_NT, DEFAULT_PRICE_NT))
+        # entry.options = ceny změněné přes „Konfigurovat“ (issue #44),
+        # entry.data = ceny zadané při přidání odběrného místa.
+        self._price_vt = float(
+            entry.options.get(CONF_PRICE_VT, entry.data.get(CONF_PRICE_VT, DEFAULT_PRICE_VT))
+        )
+        self._price_nt = float(
+            entry.options.get(CONF_PRICE_NT, entry.data.get(CONF_PRICE_NT, DEFAULT_PRICE_NT))
+        )
         self._attr_unique_id = f"{ean}_current_price"
         self._attr_name = "Aktuální cena"
         self._attr_device_info = _device_info(entry, ean)
@@ -673,8 +679,8 @@ class CezConsumptionFreshnessSensor(CoordinatorEntity[CezDistribuceCoordinator],
             "pnd_status_pouzity_kod_nabizen": info.get("assembly_code_offered"),
             "pnd_status_chyba": info.get("error"),
             "pnd_denni_registry_17_nabizeny": info.get("daily_registers_offered"),
-            "pnd_denni_registry_17_rad": info.get("daily_registers_series"),
-            "pnd_denni_registry_17_chyba": info.get("daily_registers_error"),
+            "pnd_typ_mereni": info.get("measurement_types"),
+            "pnd_sondy_kodu": info.get("probes"),
         }
 
 

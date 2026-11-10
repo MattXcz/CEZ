@@ -54,5 +54,17 @@
       "reauth_successful": "Re-authentication was successful.",
       "reconfigure_successful": "The configuration was updated."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Electricity prices",
+        "description": "Prices used by the Current price sensor. The integration reloads after saving.",
+        "data": {
+          "price_vt": "High tariff price (CZK/kWh)",
+          "price_nt": "Low tariff price (CZK/kWh)"
+        }
+      }
+    }
   }
 }

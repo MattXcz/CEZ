@@ -8,6 +8,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -66,6 +67,22 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_environment: tuple[str, str] | None = None
         self._hdo_signals: list[str] = []
         self._client: CezDistribuceApiClient | None = None
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Volba „Konfigurovat“ - ceny VT/NT (issue #44)."""
+        return CezOptionsFlow()
+
+    @classmethod
+    @callback
+    def async_supports_options_flow(cls, config_entry: config_entries.ConfigEntry) -> bool:
+        """Ceny VT/NT dávají smysl jen u běžné spotřeby - výroba/mikrozdroj
+        (FVE) cenový senzor nemá (issue #24)."""
+        om_type = config_entry.data.get(CONF_OM_TYPE) or OM_TYPE_CONSUMPTION
+        return om_type == OM_TYPE_CONSUMPTION
 
     @staticmethod
     def _login_error_key(err: Exception) -> str:
@@ -445,4 +462,44 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_PRICE_VT: price_vt,
                 CONF_PRICE_NT: price_nt,
             },
+        )
+
+
+class CezOptionsFlow(config_entries.OptionsFlowWithReload):
+    """Změna cen VT/NT bez nového přidání odběrného místa (issue #44).
+
+    Ceny se ukládají do entry.options; senzor „Aktuální cena“ je čte
+    přednostně odtud, se zálohou na entry.data (ceny zadané při přidání).
+    OptionsFlowWithReload po uložení integraci sám znovu načte."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            return self.async_create_entry(
+                data={
+                    CONF_PRICE_VT: user_input[CONF_PRICE_VT],
+                    CONF_PRICE_NT: user_input[CONF_PRICE_NT],
+                }
+            )
+
+        entry = self.config_entry
+        current_vt = entry.options.get(
+            CONF_PRICE_VT, entry.data.get(CONF_PRICE_VT, DEFAULT_PRICE_VT)
+        )
+        current_nt = entry.options.get(
+            CONF_PRICE_NT, entry.data.get(CONF_PRICE_NT, DEFAULT_PRICE_NT)
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_PRICE_VT, default=float(current_vt)): vol.All(
+                        vol.Coerce(float), vol.Range(min=0)
+                    ),
+                    vol.Required(CONF_PRICE_NT, default=float(current_nt)): vol.All(
+                        vol.Coerce(float), vol.Range(min=0)
+                    ),
+                }
+            ),
         )

@@ -54,5 +54,17 @@
       "reauth_successful": "Přihlášení bylo obnoveno.",
       "reconfigure_successful": "Konfigurace byla aktualizována."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Ceny elektřiny",
+        "description": "Ceny pro senzor Aktuální cena. Po uložení se integrace znovu načte.",
+        "data": {
+          "price_vt": "Cena VT (Kč/kWh)",
+          "price_nt": "Cena NT (Kč/kWh)"
+        }
+      }
+    }
   }
 }
