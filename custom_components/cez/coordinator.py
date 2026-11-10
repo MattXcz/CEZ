@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import (
@@ -253,43 +253,62 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return merged_data
 
     async def _async_fetch_readings(self) -> Any:
-        """Historie odečtů; při odmítnutém UID (ZDIP-360) dohledá aktuální
-        UID podle EAN a dotaz zopakuje (issue #43).
+        """Historie odečtů s obnovou zastaralého UID (issue #43)."""
+        return await self.async_call_with_uid_recovery(self._client.get_readings)
+
+    async def async_call_with_uid_recovery(
+        self, fetch: Callable[[str], Awaitable[Any]]
+    ) -> Any:
+        """Zavolá portálový endpoint adresovaný UID odběrného místa; při
+        odmítnutém UID (ZDIP-360) dohledá aktuální UID podle EAN a dotaz
+        zopakuje (issue #43).
 
         Portál může pro stejný EAN časem vrátit jiné UID, než je uložené
         v config entry. Nové UID se použije jen při jednoznačné shodě EAN
-        a uloží se až po úspěšném načtení odečtů s ním."""
-        try:
-            return await self._client.get_readings(self._uid)
-        except CezSupplyPointUidRejectedError as err:
-            _LOGGER.info(
-                "Portál odmítl uložené UID odběrného místa (ZDIP-360), "
-                "dohledávám aktuální UID podle EAN (issue #43)."
-            )
-            new_uid = await self._client.resolve_supply_point_uid(self._ean)
-            if not new_uid:
-                raise CezApiError(
-                    "Portál odmítl uložené UID odběrného místa (ZDIP-360) a "
-                    "podle EAN se nepodařilo jednoznačně dohledat nové. "
-                    "Zkontrolujte odběrné místo na dip.cezdistribuce.cz, "
-                    "případně integraci překonfigurujte (issue #43)."
-                ) from err
-            if new_uid == self._uid:
-                _LOGGER.warning(
-                    "Portál vrací pro EAN stejné UID, a přesto ho u odečtů "
-                    "odmítá (ZDIP-360) - nejspíš chybí oprávnění k odběrnému "
-                    "místu (issue #43)."
+        a uloží se až po úspěšném dotazu s ním. Používá se pro historii
+        odečtů (spotřeba) i pro detail OM při dohledání 'anlage' na
+        pozadí (__init__.py) - výroba/mikrozdroj odečty nestahuje, takže
+        by se jinak zastaralé UID u ní nikdy neobnovilo. Prázdné UID
+        (neúplná config entry) se dohledá rovnou."""
+        if self._uid:
+            try:
+                return await fetch(self._uid)
+            except CezSupplyPointUidRejectedError as err:
+                _LOGGER.info(
+                    "Portál odmítl uložené UID odběrného místa (ZDIP-360), "
+                    "dohledávám aktuální UID podle EAN (issue #43)."
                 )
-                raise
-            readings = await self._client.get_readings(new_uid)
-            self._uid = new_uid
+                rejected: Exception | None = err
+        else:
+            rejected = None
+            _LOGGER.info("Config entry nemá UID odběrného místa, dohledávám ho podle EAN.")
+
+        new_uid = await self._client.resolve_supply_point_uid(self._ean)
+        if not new_uid:
+            raise CezApiError(
+                "Portál odmítl uložené UID odběrného místa (ZDIP-360) nebo "
+                "chybí a podle EAN se nepodařilo jednoznačně dohledat nové. "
+                "Zkontrolujte odběrné místo na dip.cezdistribuce.cz, "
+                "případně integraci překonfigurujte (issue #43)."
+            ) from rejected
+        if new_uid == self._uid:
             _LOGGER.warning(
-                "UID odběrného místa se na portálu změnilo; odečty se s novým "
-                "UID načetly a nové UID ukládám do konfigurace (issue #43)."
+                "Portál vrací pro EAN stejné UID, a přesto ho odmítá "
+                "(ZDIP-360) - nejspíš chybí oprávnění k odběrnému místu "
+                "(issue #43)."
             )
-            if self._on_uid_changed is not None:
-                self._on_uid_changed(new_uid)
-            return readings
+            if rejected is not None:
+                raise rejected
+            raise CezApiError("Portál odmítl UID odběrného místa (issue #43).")
+        result = await fetch(new_uid)
+        self._uid = new_uid
+        _LOGGER.warning(
+            "UID odběrného místa se na portálu změnilo; dotaz s novým UID "
+            "prošel a nové UID ukládám do konfigurace (issue #43)."
+        )
+        if self._on_uid_changed is not None:
+            self._on_uid_changed(new_uid)
+        return result
 
     # ------------------------------------------------------------------
     # Hodinová/15min spotřeba (appka Proud, MEPAS/AWS Gateway) jako
