@@ -305,6 +305,12 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     for p in extract_supply_points(await client.get_supply_points())
                 ):
                     errors["base"] = "supply_point_not_found"
+                if not errors:
+                    # Portál může pro stejný EAN časem vrátit jiné UID
+                    # (issue #43) - překonfigurování ho rovnou obnoví.
+                    new_uid = await client.resolve_supply_point_uid(entry.data[CONF_EAN])
+                    if new_uid and new_uid != entry.data.get("uid"):
+                        data_updates["uid"] = new_uid
             except Exception as err:  # noqa: BLE001
                 errors["base"] = self._login_error_key(err)
             if not errors:

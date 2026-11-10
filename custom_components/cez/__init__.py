@@ -51,17 +51,29 @@ async def _async_enrich_partner_and_anlage(
 
     if partner and anlage:
         return
+    # První refresh mohl UID obnovit (issue #43).
+    uid = coordinator.uid or uid
+    ean = entry.data.get(CONF_EAN, "")
 
     try:
         if not partner:
-            for point in extract_supply_points(await client.get_supply_points()):
-                if point.get("uid") == uid:
-                    partner = point.get("partner", "")
-                    break
+            # Podle UID, se zálohou podle EAN - uložené UID může být
+            # zastaralé (issue #43).
+            points = extract_supply_points(await client.get_supply_points())
+            match = next((p for p in points if uid and p.get("uid") == uid), None)
+            if match is None:
+                match = next((p for p in points if p.get("ean") == ean), None)
+            if match is not None:
+                partner = match.get("partner", "")
 
         if not anlage:
             _LOGGER.debug("Dohledávám technické číslo odběrného místa na pozadí.")
-            detail = await client.get_supply_point_detail(uid)
+            # Výroba/mikrozdroj odečty nestahuje, takže tohle je u ní
+            # jediné místo, kde se zastaralé UID projeví - proto i tady
+            # obnova UID (issue #43, review).
+            detail = await coordinator.async_call_with_uid_recovery(
+                client.get_supply_point_detail
+            )
             if isinstance(detail, dict):
                 anlage = (
                     (detail.get("anlage_Dist") or {}).get("cislo")
@@ -189,8 +201,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     partner = entry.data.get(CONF_PARTNER, "")
     anlage = entry.data.get(CONF_ANLAGE, "")
 
+    def _store_new_uid(new_uid: str) -> None:
+        # Portál pro stejný EAN vrátil jiné UID (issue #43) - coordinator
+        # ho volá až po úspěšném načtení odečtů s novým UID.
+        hass.config_entries.async_update_entry(entry, data={**entry.data, "uid": new_uid})
+
     coordinator = CezDistribuceCoordinator(
-        hass, client, ean=ean, uid=uid, partner=partner, anlage=anlage, om_type=om_type
+        hass,
+        client,
+        ean=ean,
+        uid=uid,
+        partner=partner,
+        anlage=anlage,
+        om_type=om_type,
+        on_uid_changed=_store_new_uid,
     )
     await coordinator.async_config_entry_first_refresh()
     _LOGGER.debug("První načtení dat config entry dokončeno.")
