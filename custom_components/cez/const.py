@@ -146,6 +146,14 @@ PND_ASSEMBLY_HOURLY_PRODUCTION = "06"
 # najednou (--assembly 02,04,08,10,12), aby to šlo z reálného účtu
 # rychle zjistit.
 
+# Issue #40/#32: sestava 17 = denní stavy registrů elektroměru (celkem,
+# VT, NT - to, co ukazuje web Portálu naměřených dat). Podle reportu
+# z #32 ji pnd/status nabízí jen části odběrných míst (u jiných vrací
+# HTTP 400) a schéma odpovědi zatím neznáme - integrace ji proto zatím
+# jen jednorázově stáhne a zaloguje (coordinator._async_probe_daily_registers),
+# když ji pnd/status nabízí.
+PND_ASSEMBLY_DAILY_REGISTERS = "17"
+
 # Mapování na skutečný krok dat v minutách - používá ho i
 # pnd_processing.infer_interval_minutes() jako fallback, kdyby se krok
 # nepodařilo odvodit z dat samotných.

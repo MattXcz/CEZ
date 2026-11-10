@@ -109,6 +109,7 @@ async def async_setup_entry(
                 CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_VT),
                 CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT),
                 CezTotalConsumptionSensor(coordinator, entry, ean),
+                CezMeterEstimateSensor(coordinator, entry, ean),
                 CezCurrentPriceSensor(coordinator, entry, ean, hdo_signal),
             ]
         )
@@ -474,6 +475,60 @@ class CezTotalConsumptionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sen
         }
 
 
+class CezMeterEstimateSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Odhad aktuálního stavu elektroměru (VT+NT) - issue #40.
+
+    "Stav elektroměru VT/NT" a "Celková spotřeba" ukazují poslední odečet
+    z portálu, který se u většiny odběrných míst mění jen jednou měsíčně.
+    Tahle entita k němu přičítá hodinovou spotřebu z pnd/data od
+    okamžiku odečtu (výpočet v coordinator._async_update_meter_estimate),
+    takže se posouvá zhruba denně podle toho, jak ČEZ doplňuje data.
+
+    state_class TOTAL (ne TOTAL_INCREASING): při novém odečtu se základ
+    přepne na skutečný stav a odhad se může nepatrně snížit - u
+    TOTAL_INCREASING by to HA vyložil jako výměnu elektroměru. Pro
+    Energy dashboard je i tak lepší statistika cez:<ean>_consumption."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 1
+    _attr_icon = "mdi:counter"
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{ean}_meter_estimate"
+        self._attr_name = "Odhadovaný stav elektroměru"
+        self._attr_device_info = _device_info(entry, ean)
+
+    @property
+    def native_value(self) -> float | None:
+        estimate = self.coordinator.meter_estimate
+        if not estimate:
+            return None
+        return round(estimate["value"], 3)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        estimate = self.coordinator.meter_estimate
+        if not estimate:
+            return {}
+        return {
+            "posledni_odecet_kwh": round(estimate["base_kwh"], 3),
+            "posledni_odecet_k": dt_util.as_local(estimate["base_time"]).isoformat(),
+            "spotreba_od_odectu_kwh": round(estimate["increment_kwh"], 3),
+            "hodinova_data_do": dt_util.as_local(estimate["data_until"]).isoformat(),
+            "statistic_id": self.coordinator.statistic_id,
+            "poznamka": "Součet VT+NT; rozdělení na VT/NT hodinová data neumožňují.",
+        }
+
+
 class CezTotalProductionSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
     """Celková dodávka (přetok) aktivní energie do sítě - odběrné místo
     typu výroba/mikrozdroj (FVE apod.).
@@ -617,6 +672,9 @@ class CezConsumptionFreshnessSensor(CoordinatorEntity[CezDistribuceCoordinator],
             "pnd_status_kody_nalezene": info.get("codes_found"),
             "pnd_status_pouzity_kod_nabizen": info.get("assembly_code_offered"),
             "pnd_status_chyba": info.get("error"),
+            "pnd_denni_registry_17_nabizeny": info.get("daily_registers_offered"),
+            "pnd_denni_registry_17_rad": info.get("daily_registers_series"),
+            "pnd_denni_registry_17_chyba": info.get("daily_registers_error"),
         }
 
 

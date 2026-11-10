@@ -208,3 +208,62 @@ async def fetch_pnd_chunked(
 
 def _fmt(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def reading_baseline(
+    reading: dict[str, Any], local_tz: Any
+) -> tuple[datetime, float] | None:
+    """Okamžik (UTC, zaokrouhleno dolů na celou hodinu) a součet VT+NT
+    (kWh) posledního odečtu z historie odečtů portálu (issue #40).
+
+    Slouží jako základ pro odhad aktuálního stavu elektroměru: základ
+    z odečtu + hodinová spotřeba z pnd/data od tohoto okamžiku.
+
+    Předpoklad (neověřeno na portálu, jen podle běžné praxe ČEZ): odečet
+    "k datu" bez času (nebo s časem 00:00) je stav na KONCI toho dne,
+    tj. o lokální půlnoci následujícího dne. Pokud portál pošle i
+    konkrétní čas odečtu (casOdectu, např. odečet technikem), použije
+    se ten. Vrací None, když odečet nemá datum nebo ani jednu hodnotu.
+    """
+    vt = _to_float(reading.get("stavVt"))
+    nt = _to_float(reading.get("stavNt"))
+    if vt is None and nt is None:
+        return None
+
+    raw_date = str(reading.get("datumOdectu") or "").split("T")[0].strip()
+    try:
+        day = datetime.strptime(raw_date, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+    hour = minute = 0
+    raw_time = str(reading.get("casOdectu") or "").strip()
+    parts = raw_time.split(":")
+    if len(parts) >= 2:
+        try:
+            hour, minute = int(parts[0]), int(parts[1])
+        except ValueError:
+            hour = minute = 0
+        if not (0 <= hour < 24 and 0 <= minute < 60):
+            hour = minute = 0
+
+    if hour == 0 and minute == 0:
+        local_naive = day + timedelta(days=1)
+    else:
+        local_naive = day.replace(hour=hour)  # minuty zahodíme - statistiky jsou po hodinách
+
+    if hasattr(local_tz, "localize"):  # pytz
+        local = local_tz.localize(local_naive)
+    else:
+        local = local_naive.replace(tzinfo=local_tz)
+    baseline = local.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    return baseline, (vt or 0.0) + (nt or 0.0)
+
+
+def _to_float(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(str(raw).strip().replace(",", "."))
+    except (ValueError, TypeError):
+        return None
