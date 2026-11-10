@@ -105,9 +105,10 @@ v Home Assistantu čtyři položky integrace se stejnými přihlašovacími úda
 | --- | --- | --- |
 | `sensor.stav_hdo` | Senzor | Aktuální stav HDO – **VT** nebo **NT** |
 | `sensor.spinani_hdo_dnes` | Senzor | Počet intervalů NT pro dnešní den; podrobný rozpis je dostupný v atributech |
-| `sensor.spotreba_vt` | Senzor (kWh) | Poslední naměřený stav elektroměru ve vysokém tarifu |
-| `sensor.spotreba_nt` | Senzor (kWh) | Poslední naměřený stav elektroměru v nízkém tarifu |
-| `sensor.celkova_spotreba` | Senzor (kWh) | Celkový odběr aktivní energie – součet VT a NT |
+| `sensor.spotreba_vt` | Senzor (kWh) | Stav elektroměru ve vysokém tarifu z posledního odečtu (viz [Stav elektroměru a odečty](#stav-elektroměru-a-odečty)) |
+| `sensor.spotreba_nt` | Senzor (kWh) | Stav elektroměru v nízkém tarifu z posledního odečtu |
+| `sensor.celkova_spotreba` | Senzor (kWh) | Celkový odběr aktivní energie z posledního odečtu – součet VT a NT |
+| `sensor.odhadovany_stav_elektromeru` | Senzor (kWh) | Poslední odečet (VT+NT) + hodinová spotřeba od data odečtu; jen u chytrých elektroměrů |
 | `sensor.aktualni_cena` | Senzor (Kč/kWh) | Aktuální cena podle stavu HDO; ceny VT a NT se nastavují při konfiguraci |
 | `sensor.vysoky_tarif_start` | Senzor | Začátek aktuálního nebo nejbližšího období VT |
 | `sensor.vysoky_tarif_konec` | Senzor | Konec aktuálního nebo nejbližšího období VT |
@@ -127,6 +128,17 @@ Pokud přidáte odběrné místo typu **Výroba**, **Mikrozdroj** nebo **Výrobn
 - vytvoří se diagnostická entita `sensor.hodinova_data_dodavky_k`.
 
 Podrobnosti o výpočtu dodávky do sítě najdete v části [Celková dodávka do sítě](#celková-dodávka-do-sítě).
+
+## Stav elektroměru a odečty
+
+`sensor.spotreba_vt`, `sensor.spotreba_nt` a `sensor.celkova_spotreba` přebírají hodnoty z **historie odečtů** na portálu ČEZ Distribuce (stejné jako v aplikaci Proud v sekci odečtů). U většiny odběrných míst přibývá nový odečet jen jednou měsíčně nebo při fakturaci, takže tyto senzory mohou být i několik týdnů staré – datum odečtu je v atributu `datum_odectu`. Denní stavy registrů, které vidíte na webu Portálu naměřených dat, integrace zatím načíst neumí.
+
+Průběžnou spotřebu najdete:
+
+- ve statistice `cez:<ean>_consumption` (hodinová data, viz [Hodinová spotřeba](#hodinová-spotřeba)) – bez rozlišení VT/NT,
+- v senzoru `sensor.odhadovany_stav_elektromeru`, který k poslednímu odečtu (VT+NT) přičítá hodinovou spotřebu od data odečtu. Posouvá se zhruba jednou denně podle toho, jak ČEZ doplňuje hodinová data. Atributy ukazují použitý odečet, přírůstek od odečtu a konec hodinových dat.
+
+Rozdělení průběžné spotřeby na VT a NT zatím není možné, protože hodinová data tarif nerozlišují. Pokud ČEZ pro odběrné místo nabízí denní registry (sestava 17 v `pnd/status`), integrace jednou po startu zaloguje vzorek odpovědi a diagnostická entita `sensor.hodinova_data_spotreby_k` to ukáže v atributu `pnd_denni_registry_17_nabizeny`.
 
 ## Hodinová spotřeba
 

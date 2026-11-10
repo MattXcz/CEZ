@@ -33,12 +33,18 @@ from .const import (
     MAX_PND_INTERVAL_DAYS,
     OM_TYPE_CONSUMPTION,
     OM_TYPES_PRODUCTION,
+    PND_ASSEMBLY_DAILY_REGISTERS,
     PND_INTERVAL_MINUTES_BY_ASSEMBLY,
     PND_TRAILING_SAFETY_DAYS,
     UPDATE_INTERVAL_SECONDS,
     pnd_assembly_code_for,
 )
-from .pnd_processing import fetch_pnd_chunked, infer_interval_minutes, process_pnd_response
+from .pnd_processing import (
+    fetch_pnd_chunked,
+    infer_interval_minutes,
+    process_pnd_response,
+    reading_baseline,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -114,6 +120,13 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # je to vidět i bez čtení logu.
         self._pnd_status_checked = False
         self.pnd_status_info: dict[str, Any] | None = None
+
+        # Odhad aktuálního stavu elektroměru (issue #40): poslední odečet
+        # z portálu (VT+NT, typicky měsíční/fakturační) + hodinová
+        # spotřeba z pnd/data od okamžiku odečtu. Čte ho
+        # CezMeterEstimateSensor. None, dokud nejsou odečty i statistika,
+        # nebo když statistika okamžik odečtu nepokrývá.
+        self.meter_estimate: dict[str, Any] | None = None
 
         super().__init__(
             hass,
@@ -206,6 +219,15 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Import hodinové spotřeby (pnd/data) selhal "
                     "(ostatní senzory tím nejsou dotčeny)."
                 )
+            if not self._is_production:
+                try:
+                    await self._async_update_meter_estimate(merged_data.get(DATA_READINGS))
+                except Exception:  # noqa: BLE001
+                    self.meter_estimate = None
+                    _LOGGER.exception(
+                        "Výpočet odhadovaného stavu elektroměru selhal "
+                        "(ostatní senzory tím nejsou dotčeny, issue #40)."
+                    )
         else:
             _LOGGER.debug(
                 "Přeskakuji import hodinové spotřeby - chybí 'partner'/'anlage' "
@@ -444,6 +466,148 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.pnd_first_timestamp is None or oldest_hour_start < self.pnd_first_timestamp:
             self.pnd_first_timestamp = oldest_hour_start
 
+    async def _async_update_meter_estimate(self, readings: Any) -> None:
+        """Dopočítá odhad aktuálního stavu elektroměru (issue #40).
+
+        Historie odečtů z portálu se aktualizuje jen při odečtu (u
+        většiny odběrných míst jednou měsíčně), takže "Stav elektroměru
+        VT/NT" může být i několik týdnů starý. Statistika
+        cez:<ean>_consumption ale má hodinovou spotřebu až skoro do
+        současnosti - rozdíl jejího kumulativního součtu mezi okamžikem
+        odečtu a koncem importovaných dat je spotřeba od odečtu.
+
+        Rozdělení přírůstku na VT/NT tu záměrně není - hodinová data
+        (assemblyCode 05) tarif nerozlišují. Přesné denní registry VT/NT
+        by měla dávat PND sestava 17, kterou ale ČEZ nabízí jen části
+        odběrných míst (viz _async_probe_daily_registers)."""
+        if not isinstance(readings, list) or not readings:
+            self.meter_estimate = None
+            return
+        local_tz = (
+            dt_util.get_default_time_zone()
+            if hasattr(dt_util, "get_default_time_zone")
+            else dt_util.DEFAULT_TIME_ZONE
+        )
+        baseline = reading_baseline(readings[0], local_tz)
+        if baseline is None:
+            _LOGGER.debug("Odhad stavu elektroměru: poslední odečet nemá datum/hodnoty.")
+            self.meter_estimate = None
+            return
+        base_time, base_kwh = baseline
+
+        if self.pnd_total_kwh is None or self.last_pnd_timestamp is None:
+            self.meter_estimate = None
+            return
+
+        if base_time >= self.last_pnd_timestamp:
+            # Odečet je novější než poslední hodinová data (PND má zpoždění
+            # zhruba den) - nejlepší známý stav je prostě odečet sám.
+            increment = 0.0
+        else:
+            statistic_id = self._statistic_id()
+            recorder = get_instance(self.hass)
+            rows_by_id = await recorder.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                base_time - timedelta(hours=1),
+                base_time,
+                {statistic_id},
+                "hour",
+                None,
+                {"sum"},
+            )
+            rows = rows_by_id.get(statistic_id) if rows_by_id else None
+            if not rows or rows[-1].get("sum") is None:
+                _LOGGER.debug(
+                    "Odhad stavu elektroměru: statistika %s nemá hodinu "
+                    "končící v okamžiku odečtu (%s) - nelze dopočítat.",
+                    statistic_id,
+                    base_time.isoformat(),
+                )
+                self.meter_estimate = None
+                return
+            increment = self.pnd_total_kwh - float(rows[-1]["sum"])
+            if increment < 0:
+                _LOGGER.debug(
+                    "Odhad stavu elektroměru: záporný přírůstek %.3f kWh "
+                    "(nekonzistentní statistika?) - nepoužívám.",
+                    increment,
+                )
+                self.meter_estimate = None
+                return
+
+        self.meter_estimate = {
+            "value": base_kwh + increment,
+            "base_kwh": base_kwh,
+            "base_time": base_time,
+            "increment_kwh": increment,
+            "data_until": self.last_pnd_timestamp,
+        }
+        _LOGGER.debug(
+            "Odhad stavu elektroměru: odečet %.3f kWh k %s + %.3f kWh "
+            "z hodinových dat do %s = %.3f kWh.",
+            base_kwh,
+            base_time.isoformat(),
+            increment,
+            self.last_pnd_timestamp.isoformat(),
+            base_kwh + increment,
+        )
+
+    async def _async_probe_daily_registers(self) -> None:
+        """Jednorázově stáhne vzorek PND sestavy 17 (denní stavy registrů)
+        a zaloguje jeho strukturu (issue #40, #32).
+
+        Sestava 17 by měla vracet denní stavy elektroměru včetně VT/NT,
+        ale schéma odpovědi zatím neznáme a ČEZ ji nenabízí všem
+        odběrným místům (u některých vrací HTTP 400). Volá se jen, když
+        ji pnd/status nabízí. Hodnoty se nikam nepoužívají - jde jen
+        o podklad pro budoucí senzory VT/NT."""
+        now = datetime.now(timezone.utc)
+        try:
+            data = await self._client.get_pnd_data(
+                partner=self._partner,
+                ean=self._ean,
+                date_from=(now - timedelta(days=3)).strftime("%Y-%m-%dT00:00:00.000Z"),
+                date_to=now.strftime("%Y-%m-%dT00:00:00.000Z"),
+                assembly_code=PND_ASSEMBLY_DAILY_REGISTERS,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.info(
+                "pnd/data sestava %s (denní registry VT/NT) selhala: %s "
+                "(issue #40).",
+                PND_ASSEMBLY_DAILY_REGISTERS,
+                err,
+            )
+            if self.pnd_status_info is not None:
+                self.pnd_status_info["daily_registers_error"] = str(err)
+            return
+
+        series = data if isinstance(data, list) else [data]
+        summary = []
+        for item in series:
+            if not isinstance(item, dict):
+                summary.append(type(item).__name__)
+                continue
+            values = item.get("values")
+            summary.append(
+                {
+                    "keys": sorted(item.keys()),
+                    "name": item.get("name"),
+                    "unit": item.get("unit"),
+                    "values": len(values) if isinstance(values, list) else None,
+                }
+            )
+        _LOGGER.info(
+            "pnd/data sestava %s (denní registry VT/NT, issue #40): %d řad, "
+            "struktura=%s; syrová odpověď (zkráceno na 4000 znaků): %s",
+            PND_ASSEMBLY_DAILY_REGISTERS,
+            len(series),
+            summary,
+            json.dumps(data, ensure_ascii=False, default=str)[:4000],
+        )
+        if self.pnd_status_info is not None:
+            self.pnd_status_info["daily_registers_series"] = len(series)
+
     async def _async_find_first_statistic_start(
         self, recorder: Any, statistic_id: str, now: datetime
     ) -> datetime | None:
@@ -558,6 +722,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._partner,
             json.dumps(status, ensure_ascii=False, default=str)[:4000],
         )
+
+        daily_offered = bool(codes_found) and PND_ASSEMBLY_DAILY_REGISTERS in codes_found
+        self.pnd_status_info["daily_registers_offered"] = daily_offered
+        if daily_offered and not self._is_production:
+            await self._async_probe_daily_registers()
 
         if codes_found and not code_offered:
             _LOGGER.warning(
