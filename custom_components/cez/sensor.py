@@ -488,7 +488,8 @@ class CezMeterEstimateSensor(CoordinatorEntity[CezDistribuceCoordinator], Sensor
     z portálu, který se u většiny odběrných míst mění jen jednou měsíčně.
     Tahle entita k němu přičítá hodinovou spotřebu z pnd/data od
     okamžiku odečtu (výpočet v coordinator._async_update_meter_estimate),
-    takže se posouvá zhruba denně podle toho, jak ČEZ doplňuje data.
+    takže se posouvá jednou denně - ČEZ hodinová data zveřejňuje zpětně
+    vždy po půlnoci za celý předchozí den.
 
     state_class TOTAL (ne TOTAL_INCREASING): při novém odečtu se základ
     přepne na skutečný stav a odhad se může nepatrně snížit - u

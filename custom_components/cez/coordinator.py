@@ -574,8 +574,9 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         if base_time >= self.last_pnd_timestamp:
-            # Odečet je novější než poslední hodinová data (PND má zpoždění
-            # zhruba den) - nejlepší známý stav je prostě odečet sám.
+            # Odečet je novější než poslední hodinová data (ČEZ je
+            # zveřejňuje zpětně, vždy po půlnoci za celý předchozí den) -
+            # nejlepší známý stav je prostě odečet sám.
             increment = 0.0
         else:
             statistic_id = self._statistic_id()

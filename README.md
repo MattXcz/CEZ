@@ -138,7 +138,7 @@ Podrobnosti o výpočtu dodávky do sítě najdete v části [Celková dodávka 
 Průběžnou spotřebu najdete:
 
 - ve statistice `cez:<ean>_consumption` (hodinová data, viz [Hodinová spotřeba](#hodinová-spotřeba)) – bez rozlišení VT/NT,
-- v senzoru `sensor.odhadovany_stav_elektromeru`, který k poslednímu odečtu (VT+NT) přičítá hodinovou spotřebu od data odečtu. Posouvá se zhruba jednou denně podle toho, jak ČEZ doplňuje hodinová data. Atributy ukazují použitý odečet, přírůstek od odečtu a konec hodinových dat.
+- v senzoru `sensor.odhadovany_stav_elektromeru`, který k poslednímu odečtu (VT+NT) přičítá hodinovou spotřebu od data odečtu. Mění se jednou denně, protože ČEZ hodinová data zveřejňuje zpětně po půlnoci. Atributy ukazují použitý odečet, přírůstek od odečtu a konec hodinových dat.
 
 Rozdělení průběžné spotřeby na VT a NT zatím není možné, protože hodinová data tarif nerozlišují. Denní registry VT/NT nabízí API aplikace Proud jen u části odběrných míst (sestava 17); u měření typu C ji `pnd/status` nenabízí, i když web Portálu naměřených dat registry ukazuje. Integrace proto jednou po startu stáhne malý vzorek každé sestavy, kterou `pnd/status` nabídne a jejíž význam zatím neznáme, a zaloguje ho (řádky `pnd/data sonda assemblyCode=…`). Diagnostická entita `sensor.hodinova_data_spotreby_k` ukazuje typ měření (`pnd_typ_mereni`), dostupnost sestavy 17 (`pnd_denni_registry_17_nabizeny`) a krátké shrnutí sond (`pnd_sondy_kodu`).
 
@@ -152,6 +152,8 @@ Pokud máte chytrý elektroměr, integrace stahuje hodinovou spotřebu a uklád�
 ```text
 cez:<ean>_consumption
 ```
+
+ČEZ hodinová data zveřejňuje zpětně, vždy po půlnoci za celý předchozí den. Statistika i diagnostická entita `sensor.hodinova_data_spotreby_k` proto během dne končí na včerejší půlnoci – to je očekávané chování.
 
 Statistiku lze zobrazit například pomocí karty **Graf statistik** nebo ji přidat jako zdroj do Energy dashboardu.
 
