@@ -17,6 +17,7 @@ from .api import (
     CezDistribuceApiClient,
     CezInvalidCredentialsError,
     CezPortalNoDataAccessError,
+    CezPortalUnavailableError,
     CezUnexpectedLoginPageError,
     extract_supply_points,
 )
@@ -89,6 +90,9 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Převede výjimku z přihlášení na klíč chyby formuláře."""
         if isinstance(err, CezInvalidCredentialsError):
             return "invalid_auth"
+        if isinstance(err, CezPortalUnavailableError):
+            _LOGGER.warning("%s", err)
+            return "portal_unavailable"
         if isinstance(err, CezUnexpectedLoginPageError):
             return "portal_action_required"
         if isinstance(err, CezPortalNoDataAccessError):

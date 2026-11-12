@@ -94,6 +94,16 @@ class CezUnexpectedLoginPageError(CezApiError):
     """
 
 
+class CezPortalUnavailableError(CezApiError):
+    """Portál místo API odpovědi vrátil svou obecnou úvodní HTML stránku.
+
+    Stránka „Distribuční portál“ bez formulářů a bez textu o výběru účtu.
+    Objevuje se přechodně (typicky v noci, údržba portálu - issue #37,
+    komentář z 11. 11. 2026) a po čase sama zmizí. Nejde o mezikrok,
+    který by uživatel musel v prohlížeči potvrdit.
+    """
+
+
 class CezSupplyPointUidRejectedError(CezApiError):
     """Portál odmítl UID odběrného místa (HTTP 400, ZDIP-360 „EAN neexistuje
     nebo nemáte oprávnění“) - issue #43.
@@ -212,6 +222,16 @@ def _is_login_form(html: str) -> bool:
     return bool(
         soup.find("input", {"name": "execution"})
         and soup.find("input", {"type": "password"})
+    )
+
+
+def _is_generic_portal_page(info: dict[str, Any]) -> bool:
+    """True pro obecnou HTML stránku portálu bez formuláře a bez nápovědy
+    k výběru účtu - přechodná nedostupnost API, ne mezikrok (issue #37)."""
+    return (
+        not info.get("forms")
+        and not info.get("headings")
+        and not info.get("account_selection_hints")
     )
 
 
@@ -487,9 +507,23 @@ class CezDistribuceApiClient:
                     data = await self._read_json_response(resp, token_url)
                 except _InvalidJsonResponse as err:
                     if err.looks_like_portal_html:
-                        _log_unexpected_page(
-                            "token/get", str(resp.url), resp.status, await resp.text()
-                        )
+                        html = await resp.text()
+                        page = _describe_page(str(resp.url), resp.status, html)
+                        if _is_generic_portal_page(page):
+                            # Obecná stránka portálu bez formuláře = API je
+                            # dočasně nedostupné (noční údržba), ne výběr
+                            # účtu. Nežádat uživatele o hlášení do issue.
+                            page.pop("_text_preview", None)
+                            _LOGGER.debug(
+                                "ČEZ token/get vrátil obecnou stránku portálu: %s",
+                                json.dumps(page, ensure_ascii=False),
+                            )
+                            raise CezPortalUnavailableError(
+                                "Portál ČEZ Distribuce je dočasně nedostupný "
+                                "(místo API tokenu vrátil úvodní stránku, "
+                                "pravděpodobně údržba). Zkusím to znovu později."
+                            ) from err
+                        _log_unexpected_page("token/get", str(resp.url), resp.status, html)
                         raise CezUnexpectedLoginPageError(
                             "Portál po přihlášení nevydal API token (vrátil HTML). "
                             "Pravděpodobně je vyžadován mezikrok, např. výběr účtu."
