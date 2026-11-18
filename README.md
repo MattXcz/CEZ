@@ -140,7 +140,7 @@ Podrobnosti o výpočtu dodávky do sítě najdete v části [Celková dodávka 
 Průběžnou spotřebu najdete:
 
 - ve statistice `cez:<ean>_consumption` (hodinová data, viz [Hodinová spotřeba](#hodinová-spotřeba)) – bez rozlišení VT/NT,
-- v senzoru `sensor.odhadovany_stav_elektromeru`, který k poslednímu odečtu (VT+NT) přičítá hodinovou spotřebu od data odečtu. Mění se jednou denně, protože ČEZ hodinová data zveřejňuje zpětně, obvykle kolem 1:00 v noci za celý předchozí den. Atributy ukazují použitý odečet, přírůstek od odečtu a konec hodinových dat.
+- v senzoru `sensor.odhadovany_stav_elektromeru`, který k poslednímu odečtu (VT+NT) přičítá hodinovou spotřebu od data odečtu. Mění se jednou denně, protože ČEZ hodinová data zveřejňuje zpětně, obvykle kolem 1:00 v noci za celý předchozí den. Atributy ukazují použitý odečet, přírůstek od odečtu a konec hodinových dat. Atributy `chybejici_hodiny` a `nulove_hodiny` ukazují, kolik hodin od odečtu ve statistice chybí nebo má podezřele nulovou spotřebu (3 a víc hodin po sobě) – v tom případě je odhad podhodnocený. Integrace jednou denně kontroluje statistiku za posledních 62 dní a když v ní najde díru, stáhne hodinová data od toho místa znovu (ČEZ je někdy doplní se zpožděním, typicky kolem změny sazby).
 
 ### Odhad VT/NT podle HDO
 

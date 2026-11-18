@@ -299,6 +299,55 @@ def reading_baseline(
     return baseline, (vt or 0.0) + (nt or 0.0)
 
 
+def find_statistic_gaps(
+    hours: list[tuple[datetime, float | None]],
+    zero_run_hours: int | None,
+) -> tuple[datetime | None, int, int]:
+    """Najde díry v hodinové statistice (issue #40).
+
+    hours: (začátek hodiny, kWh) seřazené podle času. Díra je:
+    - chybějící hodina mezi dvěma uloženými řádky,
+    - souvislý běh alespoň `zero_run_hours` hodin s přesně 0 kWh
+      (None = nuly nekontrolovat, např. u výroby).
+    Hodiny před prvním řádkem se neřeší (elektroměr mohl začít měřit
+    později). Vrací (začátek nejstarší díry nebo None, počet chybějících
+    hodin, počet hodin v podezřelých nulových bězích).
+    """
+    earliest: datetime | None = None
+    missing = 0
+    zero_hours = 0
+    previous: datetime | None = None
+    run_start: datetime | None = None
+    run_len = 0
+
+    def _close_run() -> None:
+        nonlocal earliest, zero_hours, run_start, run_len
+        if zero_run_hours and run_start is not None and run_len >= zero_run_hours:
+            zero_hours += run_len
+            if earliest is None or run_start < earliest:
+                earliest = run_start
+        run_start, run_len = None, 0
+
+    for start, kwh in hours:
+        if previous is not None:
+            gap = int((start - previous).total_seconds() // 3600) - 1
+            if gap > 0:
+                missing += gap
+                gap_start = previous + timedelta(hours=1)
+                if earliest is None or gap_start < earliest:
+                    earliest = gap_start
+                _close_run()
+        if kwh is not None and kwh == 0:
+            if run_start is None:
+                run_start = start
+            run_len += 1
+        else:
+            _close_run()
+        previous = start
+    _close_run()
+    return earliest, missing, zero_hours
+
+
 def reading_registers(reading: dict[str, Any]) -> tuple[float | None, float | None]:
     """Stav registrů VT a NT (kWh) z odečtu - pro odhad po tarifech (issue #49)."""
     return _to_float(reading.get("stavVt")), _to_float(reading.get("stavNt"))

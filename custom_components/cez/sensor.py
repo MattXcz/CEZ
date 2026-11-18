@@ -545,6 +545,8 @@ class CezMeterEstimateSensor(CoordinatorEntity[CezDistribuceCoordinator], Sensor
             "spotreba_od_odectu_kwh": round(estimate["increment_kwh"], 3),
             "hodinova_data_do": dt_util.as_local(estimate["data_until"]).isoformat(),
             "statistic_id": self.coordinator.statistic_id,
+            "chybejici_hodiny": estimate.get("missing_hours", 0),
+            "nulove_hodiny": estimate.get("zero_hours", 0),
             "poznamka": "Součet VT+NT; odhad po tarifech viz Odhadovaný stav elektroměru VT/NT.",
         }
 
@@ -610,6 +612,7 @@ class CezMeterEstimateTariffSensor(CoordinatorEntity[CezDistribuceCoordinator], 
             "dny_s_planem_hdo_z_portalu": tariffs["days_known"],
             "dny_s_planem_podle_dne_v_tydnu": tariffs["days_weekday"],
             "dny_s_nejblizsim_planem": tariffs["days_nearest"],
+            "chybejici_hodiny": estimate.get("missing_hours", 0),
             "poznamka": "Odhad podle plánu spínání HDO; hodinová data tarif nerozlišují.",
         }
         last_day = tariffs.get("last_day")
