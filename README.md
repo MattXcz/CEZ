@@ -111,6 +111,8 @@ v Home Assistantu čtyři položky integrace se stejnými přihlašovacími úda
 | `sensor.spotreba_nt` | Senzor (kWh) | Stav elektroměru v nízkém tarifu z posledního odečtu |
 | `sensor.celkova_spotreba` | Senzor (kWh) | Celkový odběr aktivní energie z posledního odečtu – součet VT a NT |
 | `sensor.odhadovany_stav_elektromeru` | Senzor (kWh) | Poslední odečet (VT+NT) + hodinová spotřeba od data odečtu; jen u chytrých elektroměrů |
+| `sensor.odhadovany_stav_elektromeru_vt` | Senzor (kWh) | Odhad stavu registru VT – spotřeba od odečtu rozdělená podle plánu HDO (viz [Odhad VT/NT podle HDO](#odhad-vtnt-podle-hdo)) |
+| `sensor.odhadovany_stav_elektromeru_nt` | Senzor (kWh) | Odhad stavu registru NT – spotřeba od odečtu rozdělená podle plánu HDO |
 | `sensor.aktualni_cena` | Senzor (Kč/kWh) | Aktuální cena podle stavu HDO; ceny VT a NT se nastavují při přidání a lze je změnit přes **Konfigurovat** |
 | `sensor.vysoky_tarif_start` | Senzor | Začátek aktuálního nebo nejbližšího období VT |
 | `sensor.vysoky_tarif_konec` | Senzor | Konec aktuálního nebo nejbližšího období VT |
@@ -138,9 +140,23 @@ Podrobnosti o výpočtu dodávky do sítě najdete v části [Celková dodávka 
 Průběžnou spotřebu najdete:
 
 - ve statistice `cez:<ean>_consumption` (hodinová data, viz [Hodinová spotřeba](#hodinová-spotřeba)) – bez rozlišení VT/NT,
-- v senzoru `sensor.odhadovany_stav_elektromeru`, který k poslednímu odečtu (VT+NT) přičítá hodinovou spotřebu od data odečtu. Mění se jednou denně, protože ČEZ hodinová data zveřejňuje zpětně po půlnoci. Atributy ukazují použitý odečet, přírůstek od odečtu a konec hodinových dat.
+- v senzoru `sensor.odhadovany_stav_elektromeru`, který k poslednímu odečtu (VT+NT) přičítá hodinovou spotřebu od data odečtu. Mění se jednou denně, protože ČEZ hodinová data zveřejňuje zpětně, obvykle kolem 1:00 v noci za celý předchozí den. Atributy ukazují použitý odečet, přírůstek od odečtu a konec hodinových dat.
 
-Rozdělení průběžné spotřeby na VT a NT zatím není možné, protože hodinová data tarif nerozlišují. Denní registry VT/NT nabízí API aplikace Proud jen u části odběrných míst (sestava 17); u měření typu C ji `pnd/status` nenabízí, i když web Portálu naměřených dat registry ukazuje. Integrace proto jednou po startu stáhne malý vzorek každé sestavy, kterou `pnd/status` nabídne a jejíž význam zatím neznáme, a zaloguje ho (řádky `pnd/data sonda assemblyCode=…`). Diagnostická entita `sensor.hodinova_data_spotreby_k` ukazuje typ měření (`pnd_typ_mereni`), dostupnost sestavy 17 (`pnd_denni_registry_17_nabizeny`) a krátké shrnutí sond (`pnd_sondy_kodu`).
+### Odhad VT/NT podle HDO
+
+Hodinová data tarif nerozlišují, ale plán spínání HDO známe. `sensor.odhadovany_stav_elektromeru_vt` a `sensor.odhadovany_stav_elektromeru_nt` proto každou hodinu spotřeby od posledního odečtu rozdělí podle toho, kolik minut z ní podle plánu HDO připadá na NT, a přičtou ji k odečtenému stavu VT, resp. NT. Součet obou senzorů vždy odpovídá `sensor.odhadovany_stav_elektromeru`. Při novém odečtu se oba srovnají na skutečný stav. Stejně jako součtový odhad se mění jednou denně – ČEZ hodinová data zveřejňuje zpětně, obvykle kolem 1:00 v noci za celý předchozí den.
+
+Jde o odhad:
+
+- uvnitř hodiny se počítá s rovnoměrnou spotřebou (např. hodina 22:00–23:00 s NT od 22:35 jde z 25/60 do NT),
+- skutečné sepnutí relé se od plánu může o pár minut lišit,
+- portál ukazuje plán HDO jen pro dnešek a několik dní dopředu, ale hodinová data za daný den přijdou až druhý den kolem 1:00, kdy už ho portál neukazuje. Integrace si proto plán každého dne uloží, dokud je ještě aktuální (až rok zpět), a v ustáleném stavu tak počítá podle skutečného plánu. Plán stejného dne v týdnu použije jen pro dny, které nezná – typicky dny mezi posledním odečtem a prvním spuštěním této verze. Kolik dní bylo spočítáno podle skutečného plánu a kolik podle dne v týdnu, ukazují atributy `dny_s_planem_hdo_z_portalu` a `dny_s_planem_podle_dne_v_tydnu`.
+
+Atributy `posledni_den` a `posledni_den_spotreba_kwh` ukazují odhad spotřeby v daném tarifu za poslední den s hodinovými daty. Senzory jsou nedostupné u jednotarifních sazeb (odečet bez NT) a dokud integrace nezná žádný plán HDO.
+
+### Denní registry VT/NT
+
+Přesné denní stavy registrů VT/NT nabízí API aplikace Proud jen u části odběrných míst (sestava 17); u měření typu C ji `pnd/status` nenabízí, i když web Portálu naměřených dat registry ukazuje. Integrace proto jednou po startu stáhne malý vzorek každé sestavy, kterou `pnd/status` nabídne a jejíž význam zatím neznáme, a zaloguje ho (řádky `pnd/data sonda assemblyCode=…`). Diagnostická entita `sensor.hodinova_data_spotreby_k` ukazuje typ měření (`pnd_typ_mereni`), dostupnost sestavy 17 (`pnd_denni_registry_17_nabizeny`) a krátké shrnutí sond (`pnd_sondy_kodu`).
 
 ## Hodinová spotřeba
 
@@ -153,7 +169,7 @@ Pokud máte chytrý elektroměr, integrace stahuje hodinovou spotřebu a uklád�
 cez:<ean>_consumption
 ```
 
-ČEZ hodinová data zveřejňuje zpětně, vždy po půlnoci za celý předchozí den. Statistika i diagnostická entita `sensor.hodinova_data_spotreby_k` proto během dne končí na včerejší půlnoci – to je očekávané chování.
+ČEZ hodinová data zveřejňuje zpětně, obvykle kolem 1:00 v noci za celý předchozí den. Statistika i diagnostická entita `sensor.hodinova_data_spotreby_k` proto během dne končí na včerejší půlnoci – to je očekávané chování.
 
 Statistiku lze zobrazit například pomocí karty **Graf statistik** nebo ji přidat jako zdroj do Energy dashboardu.
 
@@ -181,7 +197,7 @@ Za reverzní analýzu aplikace Proud a první implementaci děkuji Romanu Vohrad
 
 ## Frekvence aktualizací
 
-Data se aktualizují **každou hodinu**. Odečty elektroměru jsou na straně ČEZ obvykle dostupné jednou denně.
+Data se aktualizují **každou hodinu**. Odečty elektroměru jsou na straně ČEZ obvykle dostupné jednou denně. Hodinová spotřeba za předchozí den se na straně ČEZ objeví obvykle kolem 1:00, integrace ji tedy načte při nejbližší hodinové aktualizaci – typicky mezi 1:00 a 2:00.
 
 ## Celková dodávka do sítě
 

@@ -260,6 +260,11 @@ def reading_baseline(
     return baseline, (vt or 0.0) + (nt or 0.0)
 
 
+def reading_registers(reading: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Stav registrů VT a NT (kWh) z odečtu - pro odhad po tarifech (issue #49)."""
+    return _to_float(reading.get("stavVt")), _to_float(reading.get("stavNt"))
+
+
 def _to_float(raw: Any) -> float | None:
     if raw is None:
         return None

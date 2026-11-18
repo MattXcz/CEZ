@@ -21,6 +21,7 @@ except ImportError:  # starší HA bez StatisticMeanType - has_mean/has_sum sta�
 from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -46,14 +47,29 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
     pnd_assembly_code_for,
 )
+from .hdo_split import (
+    SOURCE_KNOWN,
+    SOURCE_NEAREST,
+    SOURCE_WEEKDAY,
+    ScheduleLookup,
+    extract_signal_schedules,
+    merge_schedule_history,
+    split_hourly_consumption,
+)
 from .pnd_processing import (
     fetch_pnd_chunked,
     infer_interval_minutes,
     process_pnd_response,
     reading_baseline,
+    reading_registers,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Úložiště zapamatovaných plánů HDO (issue #49) - portál vrací plán jen
+# pro dnešek a pár dní dopředu, pro rozdělení spotřeby od posledního
+# odečtu na VT/NT potřebujeme i plány dní, které už portál neukazuje.
+HDO_HISTORY_STORAGE_VERSION = 1
 
 # Jak daleko do minulosti se má integrace pokusit dohledat data při úplně
 # prvním spuštění (kdy ještě neexistují žádné dlouhodobé statistiky).
@@ -75,9 +91,17 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         partner: str = "",
         anlage: str = "",
         om_type: str = OM_TYPE_CONSUMPTION,
+        hdo_signal: str = "",
         on_uid_changed: Callable[[str], None] | None = None,
     ) -> None:
         self._client = client
+        self._hdo_signal = hdo_signal or ""
+        # Plány HDO po dnech {'YYYY-MM-DD': casy} (issue #49) - načtou se
+        # líně při první aktualizaci, viz _async_update_hdo_history.
+        self._hdo_store: Store[dict[str, Any]] = Store(
+            hass, HDO_HISTORY_STORAGE_VERSION, f"{DOMAIN}.hdo_history.{ean}"
+        )
+        self._hdo_history: dict[str, str] | None = None
         # Uloží nově dohledané UID do config entry (issue #43) - viz
         # _async_fetch_readings.
         self._on_uid_changed = on_uid_changed
@@ -220,6 +244,15 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if all_fresh:
             self.last_successful_update = dt_util.utcnow()
+
+        if not self._is_production:
+            try:
+                await self._async_update_hdo_history(merged_data.get(DATA_SIGNALS))
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception(
+                    "Uložení plánu HDO pro rozdělení spotřeby na VT/NT selhalo "
+                    "(ostatní senzory tím nejsou dotčeny, issue #49)."
+                )
 
         # Import hodinové/15min spotřeby do dlouhodobých statistik NIKDY
         # nesmí shodit zbytek aktualizace (odečty, HDO, odstávky mají dál
@@ -575,7 +608,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if base_time >= self.last_pnd_timestamp:
             # Odečet je novější než poslední hodinová data (ČEZ je
-            # zveřejňuje zpětně, vždy po půlnoci za celý předchozí den) -
+            # zveřejňuje zpětně, obvykle kolem 1:00 za celý předchozí den) -
             # nejlepší známý stav je prostě odečet sám.
             increment = 0.0
         else:
@@ -617,7 +650,18 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "base_time": base_time,
             "increment_kwh": increment,
             "data_until": self.last_pnd_timestamp,
+            "tariffs": None,
         }
+
+        try:
+            self.meter_estimate["tariffs"] = await self._async_split_meter_estimate(
+                readings[0], base_time, increment
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception(
+                "Rozdělení odhadu stavu elektroměru na VT/NT selhalo "
+                "(součtový odhad zůstává, issue #49)."
+            )
         _LOGGER.debug(
             "Odhad stavu elektroměru: odečet %.3f kWh k %s + %.3f kWh "
             "z hodinových dat do %s = %.3f kWh.",
@@ -627,6 +671,128 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.last_pnd_timestamp.isoformat(),
             base_kwh + increment,
         )
+
+    async def _async_update_hdo_history(self, signals_data: Any) -> None:
+        """Zapamatuje si plány HDO z portálu po dnech (issue #49)."""
+        if self._hdo_history is None:
+            stored = await self._hdo_store.async_load()
+            history = stored.get("schedules") if isinstance(stored, dict) else None
+            self._hdo_history = (
+                {str(k): str(v) for k, v in history.items()}
+                if isinstance(history, dict)
+                else {}
+            )
+            if isinstance(stored, dict) and stored.get("signal", "") != self._hdo_signal:
+                # Uživatel přenastavil HDO signál - staré plány patří jinému
+                # signálu a výsledek by zkreslily.
+                _LOGGER.debug(
+                    "Plán HDO v úložišti patří jinému signálu, začínám znovu."
+                )
+                self._hdo_history = {}
+
+        fresh = extract_signal_schedules(signals_data, self._hdo_signal)
+        today = dt_util.as_local(dt_util.utcnow()).date()
+        if merge_schedule_history(self._hdo_history, fresh, today):
+            self._hdo_store.async_delay_save(
+                lambda: {"signal": self._hdo_signal, "schedules": dict(self._hdo_history or {})},
+                60,
+            )
+            _LOGGER.debug(
+                "Plán HDO uložen: %d dní (%s .. %s).",
+                len(self._hdo_history),
+                min(self._hdo_history) if self._hdo_history else "-",
+                max(self._hdo_history) if self._hdo_history else "-",
+            )
+
+    async def _async_split_meter_estimate(
+        self, reading: dict[str, Any], base_time: datetime, increment: float
+    ) -> dict[str, Any] | None:
+        """Rozdělí odhad stavu elektroměru na VT a NT podle plánu HDO (issue #49).
+
+        Každá hodina spotřeby od odečtu se rozpočítá podle toho, kolik minut
+        z ní podle plánu HDO připadá na NT (uvnitř hodiny předpokládá
+        rovnoměrnou spotřebu). Je to odhad - skutečné sepnutí relé se od
+        plánu může o pár minut lišit a pro dny, které portál už neukazuje,
+        se bere zapamatovaný plán nebo plán stejného dne v týdnu.
+        """
+        base_vt, base_nt = reading_registers(reading)
+        if base_vt is None or base_nt is None:
+            # Jednotarifní sazba nebo odečet bez obou registrů.
+            return None
+        lookup = ScheduleLookup(self._hdo_history or {})
+        if not lookup:
+            _LOGGER.debug("Rozdělení na VT/NT: zatím žádný plán HDO.")
+            return None
+
+        result: dict[str, Any] = {
+            "base_vt": base_vt,
+            "base_nt": base_nt,
+            "increment_vt": 0.0,
+            "increment_nt": 0.0,
+            "days_known": 0,
+            "days_weekday": 0,
+            "days_nearest": 0,
+            "last_day": None,
+        }
+        if increment <= 0 or self.last_pnd_timestamp is None or base_time >= self.last_pnd_timestamp:
+            return result
+
+        statistic_id = self._statistic_id()
+        recorder = get_instance(self.hass)
+        rows_by_id = await recorder.async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            base_time - timedelta(hours=1),
+            self.last_pnd_timestamp,
+            {statistic_id},
+            "hour",
+            None,
+            {"sum"},
+        )
+        rows = (rows_by_id or {}).get(statistic_id) or []
+        hours: list[tuple[datetime, float]] = []
+        previous_sum: float | None = None
+        for row in rows:
+            start = _stat_row_start(row)
+            row_sum = row.get("sum")
+            if start is None or row_sum is None:
+                continue
+            row_sum = float(row_sum)
+            # Řádek s 'start' = base_time - 1 h nese součet k okamžiku
+            # odečtu - je to jen výchozí bod, ne spotřeba po odečtu.
+            if previous_sum is not None and start >= base_time:
+                hours.append((start, max(row_sum - previous_sum, 0.0)))
+            previous_sum = row_sum
+
+        split = split_hourly_consumption(hours, lookup, dt_util.as_local)
+        if split is None or split.hours == 0:
+            return None
+
+        # Statistika může mít díry - rozdělení škálujeme na skutečný
+        # přírůstek, ať VT + NT vždy sedí na součtový odhad.
+        total = split.vt_kwh + split.nt_kwh
+        scale = increment / total if total > 0 else 0.0
+        result["increment_vt"] = split.vt_kwh * scale
+        result["increment_nt"] = split.nt_kwh * scale
+        result["days_known"] = split.days_count(SOURCE_KNOWN)
+        result["days_weekday"] = split.days_count(SOURCE_WEEKDAY)
+        result["days_nearest"] = split.days_count(SOURCE_NEAREST)
+        if split.daily:
+            last_day = max(split.daily)
+            vt, nt = split.daily[last_day]
+            result["last_day"] = {"date": last_day, "vt": vt, "nt": nt}
+
+        _LOGGER.debug(
+            "Rozdělení na VT/NT: %d h, VT +%.3f kWh, NT +%.3f kWh (dny s plánem "
+            "z portálu %d, podle dne v týdnu %d, nejbližší plán %d).",
+            split.hours,
+            result["increment_vt"],
+            result["increment_nt"],
+            result["days_known"],
+            result["days_weekday"],
+            result["days_nearest"],
+        )
+        return result
 
     async def _async_probe_assembly_code(self, code: str) -> str:
         """Jednorázově stáhne 3denní vzorek pnd/data pro assemblyCode, jehož
