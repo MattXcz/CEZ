@@ -209,3 +209,16 @@ DATA_PND_LAST_IMPORTED = "pnd_last_imported"
 # díra zůstala v HA statistikách navždy, protože bychom se tam po
 # postupu dopředu už nikdy nevrátili zkontrolovat.
 PND_TRAILING_SAFETY_DAYS = 5
+
+# Kontrola děr ve statistice STARŠÍCH než PND_TRAILING_SAFETY_DAYS (issue
+# #40): ČEZ někdy doplní data (typicky kolem změny sazby) později než za
+# 5 dní, takže je běžné přeimportovací okno už nespraví a odhad stavu
+# elektroměru pak ty hodiny postrádá. Jednou za PND_GAP_REPAIR_INTERVAL_HOURS
+# se proto projde statistika za posledních PND_GAP_SCAN_DAYS dní a od
+# nejstarší díry se data stáhnou znovu.
+PND_GAP_SCAN_DAYS = 62
+PND_GAP_REPAIR_INTERVAL_HOURS = 24
+# Kolik po sobě jdoucích hodin s přesně 0 kWh se u SPOTŘEBY bere jako
+# podezřelá díra (jednotlivá nulová hodina může být reálná). U výroby se
+# nuly nekontrolují vůbec - v noci jsou normální.
+PND_GAP_ZERO_RUN_HOURS = 3

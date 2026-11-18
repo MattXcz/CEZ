@@ -121,6 +121,8 @@ async def async_setup_entry(
                 CezTariffCountdownSensor(coordinator, entry, ean, hdo_signal, HDO_STATE_NT),
                 CezTotalConsumptionSensor(coordinator, entry, ean),
                 CezMeterEstimateSensor(coordinator, entry, ean),
+                CezMeterEstimateTariffSensor(coordinator, entry, ean, HDO_STATE_VT),
+                CezMeterEstimateTariffSensor(coordinator, entry, ean, HDO_STATE_NT),
                 CezCurrentPriceSensor(coordinator, entry, ean, hdo_signal),
             ]
         )
@@ -500,7 +502,7 @@ class CezMeterEstimateSensor(CoordinatorEntity[CezDistribuceCoordinator], Sensor
     Tahle entita k němu přičítá hodinovou spotřebu z pnd/data od
     okamžiku odečtu (výpočet v coordinator._async_update_meter_estimate),
     takže se posouvá jednou denně - ČEZ hodinová data zveřejňuje zpětně
-    vždy po půlnoci za celý předchozí den.
+    obvykle kolem 1:00 za celý předchozí den.
 
     state_class TOTAL (ne TOTAL_INCREASING): při novém odečtu se základ
     přepne na skutečný stav a odhad se může nepatrně snížit - u
@@ -543,8 +545,81 @@ class CezMeterEstimateSensor(CoordinatorEntity[CezDistribuceCoordinator], Sensor
             "spotreba_od_odectu_kwh": round(estimate["increment_kwh"], 3),
             "hodinova_data_do": dt_util.as_local(estimate["data_until"]).isoformat(),
             "statistic_id": self.coordinator.statistic_id,
-            "poznamka": "Součet VT+NT; rozdělení na VT/NT hodinová data neumožňují.",
+            "chybejici_hodiny": estimate.get("missing_hours", 0),
+            "nulove_hodiny": estimate.get("zero_hours", 0),
+            "poznamka": "Součet VT+NT; odhad po tarifech viz Odhadovaný stav elektroměru VT/NT.",
         }
+
+
+class CezMeterEstimateTariffSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Odhad aktuálního stavu registru VT nebo NT (issue #49).
+
+    Rozšiřuje CezMeterEstimateSensor: přírůstek spotřeby od posledního
+    odečtu se rozdělí na VT/NT podle plánu spínání HDO (hodina po hodině,
+    viz hdo_split.py). Jde o ODHAD - hodinová data tarif nerozlišují,
+    uvnitř hodiny se počítá s rovnoměrnou spotřebou a relé může spínat
+    o pár minut jinak než plán. Při novém odečtu se oba registry srovnají
+    na skutečný stav, proto state_class TOTAL (viz CezMeterEstimateSensor).
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 1
+    _attr_icon = "mdi:counter"
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+        tariff: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._tariff = tariff
+        self._key = "vt" if tariff == HDO_STATE_VT else "nt"
+        self._attr_unique_id = f"{ean}_meter_estimate_{self._key}"
+        self._attr_name = f"Odhadovaný stav elektroměru {tariff}"
+        self._attr_device_info = _device_info(entry, ean)
+
+    def _tariffs(self) -> dict[str, Any] | None:
+        estimate = self.coordinator.meter_estimate
+        return estimate.get("tariffs") if estimate else None
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._tariffs() is not None
+
+    @property
+    def native_value(self) -> float | None:
+        tariffs = self._tariffs()
+        if not tariffs:
+            return None
+        return round(tariffs[f"base_{self._key}"] + tariffs[f"increment_{self._key}"], 3)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        estimate = self.coordinator.meter_estimate
+        tariffs = self._tariffs()
+        if not estimate or not tariffs:
+            return {}
+        attrs: dict[str, Any] = {
+            "posledni_odecet_kwh": round(tariffs[f"base_{self._key}"], 3),
+            "posledni_odecet_k": dt_util.as_local(estimate["base_time"]).isoformat(),
+            "spotreba_od_odectu_kwh": round(tariffs[f"increment_{self._key}"], 3),
+            "hodinova_data_do": dt_util.as_local(estimate["data_until"]).isoformat(),
+            "dny_s_planem_hdo_z_portalu": tariffs["days_known"],
+            "dny_s_planem_podle_dne_v_tydnu": tariffs["days_weekday"],
+            "dny_s_nejblizsim_planem": tariffs["days_nearest"],
+            "chybejici_hodiny": estimate.get("missing_hours", 0),
+            "poznamka": "Odhad podle plánu spínání HDO; hodinová data tarif nerozlišují.",
+        }
+        last_day = tariffs.get("last_day")
+        if last_day:
+            attrs["posledni_den"] = last_day["date"].isoformat()
+            attrs["posledni_den_spotreba_kwh"] = round(last_day[self._key], 3)
+        return attrs
 
 
 class CezTotalProductionSensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):

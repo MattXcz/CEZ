@@ -22,6 +22,7 @@ from .api import (
 from .const import (
     CONF_ANLAGE,
     CONF_EAN,
+    CONF_HDO_SIGNAL,
     CONF_OM_TYPE,
     CONF_PARTNER,
     CONF_PASSWORD,
@@ -214,6 +215,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         partner=partner,
         anlage=anlage,
         om_type=om_type,
+        hdo_signal=entry.data.get(CONF_HDO_SIGNAL, ""),
         on_uid_changed=_store_new_uid,
     )
     await coordinator.async_config_entry_first_refresh()
