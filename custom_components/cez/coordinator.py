@@ -504,6 +504,18 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._assembly_interval_minutes,
             )
 
+        try:
+            _LOGGER.debug(
+                "pnd/data souhrn pro %s (assemblyCode=%s, okno %s .. %s): %s",
+                self._ean,
+                self._assembly_code,
+                fetch_start.isoformat(),
+                now.isoformat(),
+                json.dumps(summarize_pnd_points(raw_points), ensure_ascii=False),
+            )
+        except Exception as err:  # noqa: BLE001 - diagnostika nesmí shodit import
+            _LOGGER.debug("Souhrn pnd/data se nepodařil (%s).", err)
+
         hourly_buckets, trimmed = process_pnd_response(
             raw_points, unit, interval_minutes, fetch_start, now
         )

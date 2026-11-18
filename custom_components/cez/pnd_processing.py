@@ -136,6 +136,45 @@ def aggregate_to_hourly(
     }
 
 
+def summarize_pnd_points(raw_points: list[dict[str, Any]]) -> dict[str, Any]:
+    """Shrnutí syrových bodů z pnd/data pro DEBUG log (bez hodnot spotřeby).
+
+    Ukáže, kam až API data skutečně vrací: poslední časovou značku vůbec,
+    poslední NENULOVOU značku (za ní jsou placeholdery, které se ořežou)
+    a jaká další pole body nesou (např. příznak předběžných dat).
+    Pomáhá rozlišit "API dnešek ještě nemá" od chyby importu (issue #37).
+    """
+    times: list[str] = []
+    nonzero_times: list[str] = []
+    extra_fields: Counter[str] = Counter()
+    status_values: Counter[str] = Counter()
+    for entry in raw_points:
+        if not isinstance(entry, dict):
+            continue
+        t = entry.get("time")
+        if isinstance(t, str):
+            times.append(t)
+            try:
+                if float(entry.get("value")) != 0:
+                    nonzero_times.append(t)
+            except (TypeError, ValueError):
+                pass
+        for key in entry:
+            if key not in ("time", "value"):
+                extra_fields[key] += 1
+        for key in ("status", "state", "quality", "flag"):
+            if key in entry:
+                status_values[f"{key}={entry[key]}"] += 1
+    return {
+        "points": len(raw_points),
+        "first_time": min(times) if times else None,
+        "last_time": max(times) if times else None,
+        "last_nonzero_time": max(nonzero_times) if nonzero_times else None,
+        "extra_fields": dict(extra_fields),
+        "status_values": dict(status_values.most_common(10)),
+    }
+
+
 def process_pnd_response(
     raw_points: list[dict[str, Any]],
     unit: str | None,
