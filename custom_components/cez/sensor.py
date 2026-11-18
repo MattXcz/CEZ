@@ -57,6 +57,17 @@ def _local_now() -> datetime:
     return dt_util.now().replace(tzinfo=None)
 
 
+def _local_iso(value: datetime | None) -> str | None:
+    """Naivní lokální datetime -> ISO řetězec s timezone z HA (issue #50).
+
+    HDO výpočty běží v naivních datetime (viz `_local_now()`), do atributů
+    ale chceme jednoznačný čas s offsetem, např. `2026-11-17T22:35:00+01:00`.
+    """
+    if value is None:
+        return None
+    return value.replace(tzinfo=dt_util.get_default_time_zone()).isoformat()
+
+
 def _local_today() -> date:
     """Dnešní datum v ČASOVÉ ZÓNĚ NASTAVENÉ V HA - viz `_local_now()`."""
     return _local_now().date()
@@ -258,9 +269,9 @@ class CezHdoStateSensor(CezTimeAwareSensor):
         return {
             "hdo_signal": self._hdo_signal,
             "nt_intervals_dnes": _format_nt_intervals(intervals),
-            "od": current_window[0].isoformat() if current_window else None,
-            "do": current_window[1].isoformat() if current_window else None,
-            "dalsi_sepnuti": next_window[0].isoformat() if next_window else None,
+            "od": _local_iso(current_window[0]) if current_window else None,
+            "do": _local_iso(current_window[1]) if current_window else None,
+            "dalsi_sepnuti": _local_iso(next_window[0]) if next_window else None,
         }
 
 
@@ -964,6 +975,10 @@ def _current_tariff_window_absolute(
     intervals: list[dict], tariff: str, now: datetime
 ) -> tuple[datetime, datetime] | None:
     """Vrátí absolutní začátek/konec aktuálního období tarifu vůči `now`."""
+    # HDO spíná vždy na celou minutu - sekundy/mikrosekundy z `now` by se
+    # propsaly do atributů a každá aktualizace by zapsala nový stav do DB
+    # (issue #50).
+    now = now.replace(second=0, microsecond=0)
     now_minute = now.hour * 60 + now.minute
 
     if _state_for_minute(intervals, now_minute) != tariff:
@@ -993,6 +1008,10 @@ def _next_tariff_window_absolute(
     intervals: list[dict], tariff: str, now: datetime
 ) -> tuple[datetime, datetime] | None:
     """Vrátí absolutní začátek/konec nejbližšího budoucího období tarifu vůči `now`."""
+    # HDO spíná vždy na celou minutu - sekundy/mikrosekundy z `now` by se
+    # propsaly do atributů a každá aktualizace by zapsala nový stav do DB
+    # (issue #50).
+    now = now.replace(second=0, microsecond=0)
     now_minute = now.hour * 60 + now.minute
 
     in_tariff = _state_for_minute(intervals, now_minute) == tariff
