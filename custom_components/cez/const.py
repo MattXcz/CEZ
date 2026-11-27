@@ -39,6 +39,16 @@ CONF_ANLAGE = "anlage"
 CONF_PORTAL_ENVIRONMENT = "portal_environment"
 CONF_PORTAL_PARTNER = "portal_partner"
 
+# Způsob přihlášení. "password" = jméno a heslo k portálu (výchozí, chybí-li
+# klíč u starších entries). "browser" = uživatel se přihlásí v prohlížeči
+# libovolnou metodou, kterou ČEZ nabízí (i Google/Apple), a integrace si
+# uloží jen refresh token appky Proud. Portálová data (odečty, HDO) pak
+# nejsou k dispozici - viz README.
+CONF_AUTH_METHOD = "auth_method"
+AUTH_METHOD_PASSWORD = "password"
+AUTH_METHOD_BROWSER = "browser"
+CONF_REFRESH_TOKEN = "refresh_token"
+
 # Názvy prostředí portálu dle landing aplikace (funkce environmentName).
 # Popisky voleb v config flow jsou dynamické (EAN), takže je nejde přeložit
 # přes translations/*.json - jazyk se vybírá podle hass.config.language.
@@ -87,6 +97,15 @@ MEPAS_TOKEN_URL = "https://mepas.cez.cz/cas/oidc/accessToken"
 MEPAS_CLIENT_ID = "9T07rTQVB5ITpkeX.dip.proud.padm.ext.zak.prod.v1"
 MEPAS_SCOPE = "openid"
 MEPAS_LOGIN_REDIRECT_URI = "cda://validation/"
+MEPAS_AUTHORIZE_URL = "https://mepas.cez.cz/cas/oidc/authorize"
+MEPAS_USERINFO_URL = "https://mepas.cez.cz/cas/oidc/oidcProfile"
+# Přihlášení v prohlížeči (Google/Apple...) žádá navíc offline_access, aby
+# CAS vydal refresh token (discovery mepas.cez.cz ho i grant refresh_token
+# inzeruje). Kdyby ho klient appky Proud povolený neměl, config flow zkusí
+# znovu jen s MEPAS_SCOPE.
+MEPAS_BROWSER_SCOPE = "openid offline_access"
+# Token obnovujeme o tolik sekund dřív, než vyprší.
+MEPAS_TOKEN_EXPIRY_MARGIN_SECONDS = 60
 
 AWS_API_GATEWAY_STATIC_URL = "https://prodng.cezdis-cloudapps.net"
 

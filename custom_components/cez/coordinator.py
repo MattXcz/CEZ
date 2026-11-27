@@ -232,8 +232,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return
                 raise UpdateFailed(f"Neočekávaná chyba: {err}") from err
 
+        portal = self._client.has_portal_login
         try:
-            if not self._is_production:
+            # Přihlášení v prohlížeči (Google/Apple) nemá portálovou session -
+            # odečty a HDO signály jsou jen v portálu, takže se nestahují.
+            if not self._is_production and portal:
                 # Historie odečtů (stavVt/stavNt) a HDO spínací signály
                 # dávají smysl jen u odběrného místa běžné spotřeby. U
                 # výroby/mikrozdroje vrací get_readings registry ODBĚRU
@@ -253,7 +256,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if all_fresh:
             self.last_successful_update = dt_util.utcnow()
 
-        if not self._is_production:
+        if not self._is_production and portal:
             try:
                 await self._async_update_hdo_history(merged_data.get(DATA_SIGNALS))
             except Exception:  # noqa: BLE001
@@ -268,7 +271,21 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # kdyby MEPAS přihlášení zrovna selhalo). Tahle část je nezávislá
         # na 'all_fresh' výše - last_successful_update sleduje portálová
         # data, last_pnd_timestamp jen čerstvost hodinové spotřeby.
-        if self._partner and self._anlage:
+        # 'anlage' pnd/data nepotřebuje, slouží jen jako znak dokončeného
+        # doplnění metadat z portálu. Bez portálu (přihlášení v prohlížeči)
+        # stačí partner z tokenu.
+        if self._partner and (self._anlage or not portal):
+            if not portal:
+                # Hodinová data jsou tu jediná přihlášená data - odmítnutý
+                # refresh token musí vést na reauth, ne jen na log (chyby
+                # jednotlivých oken pnd/data se níž polykají).
+                try:
+                    await self._client.ensure_mepas_token()
+                except CezInvalidCredentialsError as err:
+                    raise ConfigEntryAuthFailed(str(err)) from err
+                except Exception as err:  # noqa: BLE001
+                    # Síť/výpadek CAS - import níž to zkusí znovu a zaloguje.
+                    _LOGGER.warning("Obnova přihlášení ČEZ (MEPAS) selhala: %s", err)
             try:
                 await self._async_update_pnd_statistics()
             except Exception:  # noqa: BLE001
@@ -276,7 +293,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Import hodinové spotřeby (pnd/data) selhal "
                     "(ostatní senzory tím nejsou dotčeny)."
                 )
-            if not self._is_production:
+            if not self._is_production and portal:
                 try:
                     await self._async_update_meter_estimate(merged_data.get(DATA_READINGS))
                 except Exception:  # noqa: BLE001

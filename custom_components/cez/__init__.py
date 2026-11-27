@@ -20,7 +20,10 @@ from .api import (
     extract_supply_points,
 )
 from .const import (
+    AUTH_METHOD_BROWSER,
+    AUTH_METHOD_PASSWORD,
     CONF_ANLAGE,
+    CONF_AUTH_METHOD,
     CONF_EAN,
     CONF_HDO_SIGNAL,
     CONF_OM_TYPE,
@@ -28,6 +31,7 @@ from .const import (
     CONF_PASSWORD,
     CONF_PORTAL_ENVIRONMENT,
     CONF_PORTAL_PARTNER,
+    CONF_REFRESH_TOKEN,
     CONF_USERNAME,
     DOMAIN,
     OM_TYPE_CONSUMPTION,
@@ -152,8 +156,11 @@ async def _async_ensure_portal_environment(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Nastaví integraci z config entry."""
-    username = entry.data[CONF_USERNAME]
-    password = entry.data[CONF_PASSWORD]
+    browser_login = (
+        entry.data.get(CONF_AUTH_METHOD, AUTH_METHOD_PASSWORD) == AUTH_METHOD_BROWSER
+    )
+    username = "" if browser_login else entry.data[CONF_USERNAME]
+    password = "" if browser_login else entry.data[CONF_PASSWORD]
     ean = entry.data[CONF_EAN]
     uid = entry.data.get("uid", "")
     if not (entry.title or "").strip():
@@ -177,16 +184,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if entry.data.get(CONF_PORTAL_ENVIRONMENT) and entry.data.get(CONF_PORTAL_PARTNER)
         else None
     )
+
+    def _store_refresh_token(token: str) -> None:
+        # CAS může refresh token při každém použití vyměnit (rotace) -
+        # starý pak už neplatí, nový se musí hned uložit.
+        if entry.data.get(CONF_REFRESH_TOKEN) != token:
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_REFRESH_TOKEN: token}
+            )
+
     session = aiohttp.ClientSession()
     client = CezDistribuceApiClient(
         username=username,
         password=password,
         session=session,
         portal_environment=portal_environment,
+        refresh_token=entry.data.get(CONF_REFRESH_TOKEN) if browser_login else None,
+        on_refresh_token=_store_refresh_token if browser_login else None,
     )
 
     try:
-        await client.login()
+        if browser_login:
+            await client.ensure_mepas_token()
+        else:
+            await client.login()
     except CezInvalidCredentialsError as err:
         await session.close()
         raise ConfigEntryAuthFailed(str(err)) from err
@@ -197,7 +218,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(f"Přihlášení do ČEZ selhalo: {err}") from err
 
     entry.async_on_unload(session.close)
-    await _async_ensure_portal_environment(hass, entry, client, uid, ean)
+    if browser_login:
+        try:
+            await client.login_anonymous()
+        except Exception as err:  # noqa: BLE001
+            # Jen odstávky; zkusí se znovu při prvním dotazu na ně.
+            _LOGGER.debug("Anonymní token portálu se nepodařilo načíst: %s", err)
+    else:
+        await _async_ensure_portal_environment(hass, entry, client, uid, ean)
     _LOGGER.debug("Přihlášení config entry dokončeno; pokračuji načtením dat.")
     partner = entry.data.get(CONF_PARTNER, "")
     anlage = entry.data.get(CONF_ANLAGE, "")
@@ -225,7 +253,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _LOGGER.debug("Platformy ČEZ byly načteny.")
-    if not partner or not anlage:
+    if not browser_login and (not partner or not anlage):
         task = hass.async_create_task(
             _async_enrich_partner_and_anlage(hass, entry, client, coordinator, uid),
             name=f"{DOMAIN} enrich supply point metadata",

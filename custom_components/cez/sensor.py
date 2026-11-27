@@ -21,6 +21,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    AUTH_METHOD_BROWSER,
+    CONF_AUTH_METHOD,
     CONF_EAN,
     CONF_HDO_SIGNAL,
     CONF_OM_TYPE,
@@ -106,6 +108,12 @@ async def async_setup_entry(
         # entit, aby nezůstaly viset jako "nedostupné".
         _remove_stale_production_reading_entities(hass, ean)
         entities.append(CezTotalProductionSensor(coordinator, entry, ean))
+    elif entry.data.get(CONF_AUTH_METHOD) == AUTH_METHOD_BROWSER:
+        # Přihlášení v prohlížeči (Google/Apple) nemá přístup k portálu -
+        # odečty, HDO a z nich odvozené senzory (cena, odhad elektroměru)
+        # by byly trvale nedostupné. Spotřeba jde do dlouhodobé statistiky
+        # "cez:<ean>_consumption" (Energy dashboard).
+        pass
     else:
         entities.extend(
             [

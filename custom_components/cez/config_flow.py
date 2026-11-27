@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import logging
+import re
+import secrets
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import voluptuous as vol
@@ -13,16 +16,25 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import (
+    CezApiError,
+    CezAuthCodeError,
     CezAuthError,
     CezDistribuceApiClient,
     CezInvalidCredentialsError,
     CezPortalNoDataAccessError,
     CezPortalUnavailableError,
     CezUnexpectedLoginPageError,
+    build_mepas_authorize_url,
+    extract_business_partners,
     extract_supply_points,
+    find_eans,
+    make_pkce_pair,
+    parse_mepas_redirect,
 )
 from .const import (
+    AUTH_METHOD_BROWSER,
     CONF_ANLAGE,
+    CONF_AUTH_METHOD,
     CONF_EAN,
     CONF_HDO_SIGNAL,
     CONF_OM_TYPE,
@@ -32,12 +44,17 @@ from .const import (
     CONF_PORTAL_PARTNER,
     CONF_PRICE_NT,
     CONF_PRICE_VT,
+    CONF_REFRESH_TOKEN,
     CONF_USERNAME,
     DEFAULT_PRICE_NT,
     DEFAULT_PRICE_VT,
     DOMAIN,
+    MEPAS_BROWSER_SCOPE,
+    MEPAS_LOGIN_REDIRECT_URI,
+    MEPAS_SCOPE,
     OM_TYPE_CONSUMPTION,
     PORTAL_ENVIRONMENT_NAMES,
+    pnd_assembly_code_for,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,6 +65,13 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): str,
     }
 )
+
+CONF_REDIRECT_URL = "redirect_url"
+# Přihlášení v prohlížeči nezná typ odběrného místa z portálu - uživatel
+# volí jen spotřebu/výrobu; "V" zastupuje celou skupinu V/M/B (chovají se
+# stejně, viz OM_TYPES_PRODUCTION).
+OM_TYPE_PRODUCTION_CHOICE = "V"
+_EAN_FORMAT = re.compile(r"^\d{18}$")
 
 
 class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -68,6 +92,15 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_environment: tuple[str, str] | None = None
         self._hdo_signals: list[str] = []
         self._client: CezDistribuceApiClient | None = None
+        # Přihlášení v prohlížeči (Google/Apple...) - PKCE a state platí
+        # pro jednu authorize URL; po neúspěchu se vygeneruje nová.
+        self._browser_scope: str = MEPAS_BROWSER_SCOPE
+        self._browser_state: str = ""
+        self._browser_verifier: str = ""
+        self._browser_url: str = ""
+        self._browser_client: CezDistribuceApiClient | None = None
+        self._browser_partners: list[str] = []
+        self._browser_eans: list[str] = []
 
     @staticmethod
     @callback
@@ -83,7 +116,9 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Ceny VT/NT dávají smysl jen u běžné spotřeby - výroba/mikrozdroj
         (FVE) cenový senzor nemá (issue #24)."""
         om_type = config_entry.data.get(CONF_OM_TYPE) or OM_TYPE_CONSUMPTION
-        return om_type == OM_TYPE_CONSUMPTION
+        # Přihlášení v prohlížeči nemá HDO, takže ani cenový senzor.
+        browser = config_entry.data.get(CONF_AUTH_METHOD) == AUTH_METHOD_BROWSER
+        return om_type == OM_TYPE_CONSUMPTION and not browser
 
     @staticmethod
     def _login_error_key(err: Exception) -> str:
@@ -122,6 +157,14 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        """Volba způsobu přihlášení."""
+        return self.async_show_menu(
+            step_id="user", menu_options=["password", "browser_login"]
+        )
+
+    async def async_step_password(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         """Zadání přihlašovacích údajů."""
         errors: dict[str, str] = {}
 
@@ -152,9 +195,261 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return await self.async_step_select_supply_point()
 
         return self.async_show_form(
-            step_id="user",
+            step_id="password",
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
+        )
+
+    # ------------------------------------------------------------------
+    # Přihlášení v prohlížeči (Google, Apple i heslo) - jen data appky Proud
+    # ------------------------------------------------------------------
+
+    def _new_browser_login(self) -> None:
+        """Nová authorize URL s čerstvým PKCE a state (kód je jednorázový)."""
+        self._browser_verifier, challenge = make_pkce_pair()
+        self._browser_state = secrets.token_urlsafe(24)
+        self._browser_url = build_mepas_authorize_url(
+            self._browser_state, challenge, self._browser_scope
+        )
+
+    async def async_step_browser_login(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Uživatel se přihlásí v prohlížeči a vloží adresu cda://validation/?code=...
+
+        Přesměrování na Home Assistant ČEZ nepovoluje (redirect_uri klienta
+        appky Proud je pevně cda://validation/), proto se adresa kopíruje
+        ručně. Integrace si uloží jen refresh token, ne údaje k Google/Apple.
+        """
+        errors: dict[str, str] = {}
+        if not self._browser_url:
+            self._new_browser_login()
+
+        if user_input is not None:
+            parsed = parse_mepas_redirect(user_input.get(CONF_REDIRECT_URL, ""))
+            error = parsed.get("error")
+            if error == "invalid_scope" and self._browser_scope != MEPAS_SCOPE:
+                # Klient appky Proud nemá povolený offline_access - zkusíme
+                # bez něj (refresh token pak může, ale nemusí přijít).
+                _LOGGER.info("CAS odmítl scope offline_access, zkouším jen openid.")
+                self._browser_scope = MEPAS_SCOPE
+                self._new_browser_login()
+                errors["base"] = "scope_retry"
+            elif error:
+                _LOGGER.warning("Přihlášení v prohlížeči vrátilo chybu: %s", error)
+                self._new_browser_login()
+                errors["base"] = "browser_login_failed"
+            elif not parsed.get("code"):
+                errors[CONF_REDIRECT_URL] = "invalid_redirect_url"
+            elif parsed.get("state") and parsed["state"] != self._browser_state:
+                # Adresa z jiného (staršího) pokusu - její kód k našemu
+                # PKCE verifieru nepatří.
+                self._new_browser_login()
+                errors["base"] = "state_mismatch"
+            else:
+                errors = await self._async_finish_browser_login(parsed["code"])
+                if not errors and self.source in (
+                    config_entries.SOURCE_REAUTH,
+                    config_entries.SOURCE_RECONFIGURE,
+                ):
+                    errors = await self._async_check_existing_entry_access()
+                if not errors:
+                    return await self._async_after_browser_login()
+
+        return self.async_show_form(
+            step_id="browser_login",
+            data_schema=vol.Schema({vol.Required(CONF_REDIRECT_URL): str}),
+            description_placeholders={
+                "authorize_url": self._browser_url,
+                "redirect_uri": MEPAS_LOGIN_REDIRECT_URI,
+            },
+            errors=errors,
+        )
+
+    async def _async_finish_browser_login(self, code: str) -> dict[str, str]:
+        """Vymění kód za tokeny. Vrací chyby formuláře (prázdné = OK)."""
+        client = CezDistribuceApiClient(
+            username="", password="", session=async_get_clientsession(self.hass)
+        )
+        try:
+            await client.exchange_mepas_code(code, self._browser_verifier, self._browser_scope)
+        except CezAuthCodeError as err:
+            _LOGGER.warning("%s", err)
+            self._new_browser_login()
+            return {"base": "code_expired"}
+        except Exception as err:  # noqa: BLE001
+            self._new_browser_login()
+            if not isinstance(err, (CezAuthError, CezApiError)):
+                _LOGGER.exception("Neočekávaná chyba při výměně kódu", exc_info=err)
+            return {"base": "cannot_connect"}
+        if not client.mepas_refresh_token:
+            # Bez refresh tokenu by integrace přestala fungovat, jakmile
+            # vyprší access token (desítky minut) - nemá smysl ji zakládat.
+            _LOGGER.warning(
+                "ČEZ nevydal refresh token (scope=%s) - přihlášení v prohlížeči "
+                "nejde trvale použít.",
+                self._browser_scope,
+            )
+            self._new_browser_login()
+            return {"base": "no_refresh_token"}
+        self._browser_client = client
+        return {}
+
+    async def _async_check_existing_entry_access(self) -> dict[str, str]:
+        """Při reauth/reconfigure: nový účet musí vidět odběrné místo entry."""
+        entry = (
+            self._get_reauth_entry()
+            if self.source == config_entries.SOURCE_REAUTH
+            else self._get_reconfigure_entry()
+        )
+        errors = await self._async_check_pnd_access(
+            entry.data.get(CONF_PARTNER, ""),
+            entry.data[CONF_EAN],
+            entry.data.get(CONF_OM_TYPE) or OM_TYPE_CONSUMPTION,
+        )
+        if errors.get("base") == "pnd_check_failed":
+            self._new_browser_login()
+            return {"base": "supply_point_not_found"}
+        return errors
+
+    async def _async_after_browser_login(self) -> FlowResult:
+        """Po úspěšném přihlášení: reauth/reconfigure uloží token, jinak výběr OM."""
+        client = self._browser_client
+        assert client is not None
+        token = client.mepas_refresh_token
+        if self.source in (config_entries.SOURCE_REAUTH, config_entries.SOURCE_RECONFIGURE):
+            entry = (
+                self._get_reauth_entry()
+                if self.source == config_entries.SOURCE_REAUTH
+                else self._get_reconfigure_entry()
+            )
+            return self.async_update_reload_and_abort(
+                entry,
+                data_updates={
+                    CONF_AUTH_METHOD: AUTH_METHOD_BROWSER,
+                    CONF_REFRESH_TOKEN: token,
+                },
+            )
+        return await self.async_step_browser_supply_point()
+
+    async def _async_discover_browser_supply_points(self) -> None:
+        """Partner z tokenu/profilu a kandidáti EAN z pnd/status (best-effort)."""
+        client = self._browser_client
+        assert client is not None
+        partners = extract_business_partners(client.mepas_claims)
+        if not partners:
+            try:
+                partners = extract_business_partners(await client.get_mepas_userinfo())
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Profil uživatele (userinfo) se nepodařilo načíst: %s", err)
+        self._browser_partners = partners
+        eans: list[str] = []
+        for partner in partners:
+            try:
+                status = await client.get_pnd_status(partner)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("pnd/status pro partnera se nepodařil: %s", err)
+                continue
+            eans.extend(e for e in find_eans(status) if e not in eans)
+        self._browser_eans = eans
+        _LOGGER.debug(
+            "Přihlášení v prohlížeči: partnerů=%d, nalezených EAN=%d.",
+            len(partners),
+            len(eans),
+        )
+
+    async def async_step_browser_supply_point(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Výběr odběrného místa bez portálu (EAN, partner, spotřeba/výroba)."""
+        errors: dict[str, str] = {}
+        if user_input is None and not self._browser_partners and not self._browser_eans:
+            await self._async_discover_browser_supply_points()
+
+        if user_input is not None:
+            ean = re.sub(r"\s", "", str(user_input[CONF_EAN]))
+            partner = re.sub(r"\s", "", str(user_input[CONF_PARTNER]))
+            om_type = user_input[CONF_OM_TYPE]
+            if not _EAN_FORMAT.match(ean):
+                errors[CONF_EAN] = "invalid_ean"
+            elif not partner.isdigit():
+                errors[CONF_PARTNER] = "invalid_partner"
+            else:
+                await self.async_set_unique_id(ean)
+                self._abort_if_unique_id_configured()
+                errors = await self._async_check_pnd_access(partner, ean, om_type)
+                if not errors:
+                    return self._async_create_browser_entry(partner, ean, om_type)
+
+        ean_field: Any = vol.In(self._browser_eans) if len(self._browser_eans) > 1 else str
+        ean_default = self._browser_eans[0] if self._browser_eans else vol.UNDEFINED
+        partner_default = self._browser_partners[0] if self._browser_partners else vol.UNDEFINED
+        language = "cs" if (self.hass.config.language or "").startswith("cs") else "en"
+        om_labels = (
+            {OM_TYPE_CONSUMPTION: "Spotřeba", OM_TYPE_PRODUCTION_CHOICE: "Výroba / mikrozdroj"}
+            if language == "cs"
+            else {OM_TYPE_CONSUMPTION: "Consumption", OM_TYPE_PRODUCTION_CHOICE: "Production / microsource"}
+        )
+        return self.async_show_form(
+            step_id="browser_supply_point",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_EAN, default=ean_default): ean_field,
+                    vol.Required(CONF_PARTNER, default=partner_default): str,
+                    vol.Required(CONF_OM_TYPE, default=OM_TYPE_CONSUMPTION): vol.In(om_labels),
+                }
+            ),
+            description_placeholders={
+                "ean_count": str(len(self._browser_eans)),
+            },
+            errors=errors,
+        )
+
+    async def _async_check_pnd_access(
+        self, partner: str, ean: str, om_type: str
+    ) -> dict[str, str]:
+        """Ověří, že pnd/data pro zadané údaje odpovídá (poslední 3 dny)."""
+        client = self._browser_client
+        assert client is not None
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        fmt = "%Y-%m-%dT%H:%M:%S.000Z"
+        try:
+            await client.get_pnd_data(
+                partner,
+                ean,
+                (now - timedelta(days=3)).strftime(fmt),
+                now.strftime(fmt),
+                pnd_assembly_code_for(om_type),
+            )
+        except CezInvalidCredentialsError:
+            return {"base": "invalid_auth"}
+        except CezApiError as err:
+            _LOGGER.warning("Ověření hodinových dat selhalo: %s", err)
+            return {"base": "pnd_check_failed"}
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Ověření hodinových dat selhalo: %s", err)
+            return {"base": "cannot_connect"}
+        return {}
+
+    @callback
+    def _async_create_browser_entry(self, partner: str, ean: str, om_type: str) -> FlowResult:
+        client = self._browser_client
+        assert client is not None
+        title = f"ČEZ {ean}" + (" (výroba)" if om_type != OM_TYPE_CONSUMPTION else "")
+        return self.async_create_entry(
+            title=title,
+            data={
+                CONF_AUTH_METHOD: AUTH_METHOD_BROWSER,
+                CONF_REFRESH_TOKEN: client.mepas_refresh_token,
+                CONF_EAN: ean,
+                "uid": "",
+                CONF_PARTNER: partner,
+                CONF_ANLAGE: "",
+                CONF_OM_TYPE: om_type,
+                CONF_HDO_SIGNAL: "",
+                CONF_PRICE_VT: DEFAULT_PRICE_VT,
+                CONF_PRICE_NT: DEFAULT_PRICE_NT,
+            },
         )
 
     # ------------------------------------------------------------------
@@ -262,7 +557,9 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     # ------------------------------------------------------------------
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> FlowResult:
-        """Spustí HA, když portál odmítne uložené heslo."""
+        """Spustí HA, když portál odmítne uložené heslo (nebo refresh token)."""
+        if entry_data.get(CONF_AUTH_METHOD) == AUTH_METHOD_BROWSER:
+            return await self.async_step_browser_login()
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -301,6 +598,10 @@ class CezDistribuceConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         i dlouhodobé statistiky. Jiné odběrné místo = nová integrace.
         """
         entry = self._get_reconfigure_entry()
+        if entry.data.get(CONF_AUTH_METHOD) == AUTH_METHOD_BROWSER:
+            # Jediný údaj je refresh token - překonfigurování = nové
+            # přihlášení v prohlížeči.
+            return await self.async_step_browser_login()
         errors: dict[str, str] = {}
         if user_input is not None:
             client = CezDistribuceApiClient(
