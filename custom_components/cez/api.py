@@ -7,8 +7,10 @@ import json
 import logging
 import re
 import secrets
+import time
 import urllib.parse
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -20,10 +22,13 @@ try:
         APP_BUILD_NUMBER,
         APP_VERSION,
         AWS_API_GATEWAY_STATIC_URL,
+        MEPAS_AUTHORIZE_URL,
         MEPAS_CLIENT_ID,
         MEPAS_LOGIN_REDIRECT_URI,
         MEPAS_SCOPE,
+        MEPAS_TOKEN_EXPIRY_MARGIN_SECONDS,
         MEPAS_TOKEN_URL,
+        MEPAS_USERINFO_URL,
     )
 except ImportError:
     # Samostatně (diagnostické skripty ve scripts/) - const.py leží ve
@@ -32,10 +37,13 @@ except ImportError:
         APP_BUILD_NUMBER,
         APP_VERSION,
         AWS_API_GATEWAY_STATIC_URL,
+        MEPAS_AUTHORIZE_URL,
         MEPAS_CLIENT_ID,
         MEPAS_LOGIN_REDIRECT_URI,
         MEPAS_SCOPE,
+        MEPAS_TOKEN_EXPIRY_MARGIN_SECONDS,
         MEPAS_TOKEN_URL,
+        MEPAS_USERINFO_URL,
     )
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,6 +87,13 @@ class CezAuthError(Exception):
 
 class CezInvalidCredentialsError(CezAuthError):
     """Portál odmítl jméno/heslo - jediná chyba, která má spustit reauth."""
+
+
+class CezAuthCodeError(CezAuthError):
+    """Kód z přihlášení v prohlížeči neprošel výměnou za tokeny.
+
+    Typicky vypršel (CAS ho drží jen krátce) nebo už byl použit -
+    uživatel se musí přihlásit znovu."""
 
 
 class CezApiError(Exception):
@@ -330,6 +345,115 @@ def _make_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
+def make_pkce_pair() -> tuple[str, str]:
+    """Veřejná varianta _make_pkce_pair pro config flow."""
+    return _make_pkce_pair()
+
+
+def build_mepas_authorize_url(state: str, code_challenge: str, scope: str) -> str:
+    """Authorize URL klienta appky Proud pro přihlášení v prohlížeči.
+
+    Přihlašovací stránka CAS pro tohoto klienta nabízí i Google a Apple
+    (delegované přihlášení google_dipprod/apple_dipprod), takže na konci
+    každé metody přihlášení je přesměrování na cda://validation/?code=...
+    """
+    return (
+        f"{MEPAS_AUTHORIZE_URL}"
+        f"?client_id={MEPAS_CLIENT_ID}"
+        f"&response_type=code"
+        f"&state={urllib.parse.quote(state, safe='')}"
+        f"&code_challenge_method=S256"
+        f"&code_challenge={code_challenge}"
+        f"&redirect_uri={urllib.parse.quote(MEPAS_LOGIN_REDIRECT_URI, safe='')}"
+        f"&scope={urllib.parse.quote(scope, safe='')}"
+    )
+
+
+def parse_mepas_redirect(value: str) -> dict[str, str]:
+    """Vytáhne code/state/error z vložené adresy cda://validation/?...
+
+    Přijme celou adresu, jen část za '?' nebo samotný kód. Vrací slovník
+    s klíči, které adresa obsahuje (code, state, error, error_description).
+    """
+    value = (value or "").strip().strip('"').strip("'")
+    if not value:
+        return {}
+    if "=" not in value and "?" not in value and "/" not in value:
+        # Uživatel vložil jen samotný kód.
+        return {"code": value}
+    if "?" in value or "#" in value or "://" in value:
+        url = urllib.parse.urlparse(value)
+        # Některé prohlížeče/OS vrací parametry ve fragmentu.
+        query = url.query or url.fragment
+    else:
+        # Jen část za '?' (code=...&state=...).
+        query = value
+    parsed = urllib.parse.parse_qs(query)
+    return {
+        key: parsed[key][0]
+        for key in ("code", "state", "error", "error_description")
+        if parsed.get(key) and parsed[key][0]
+    }
+
+
+def decode_jwt_claims(token: str | None) -> dict[str, Any]:
+    """Payload JWT bez ověření podpisu.
+
+    Token přišel přímo z token endpointu ČEZ přes TLS, podpis tu nic
+    nechrání - claims jen čteme (business_partner, sub, exp). Neplatný
+    nebo neprůhledný token vrátí prázdný slovník.
+    """
+    if not token or token.count(".") < 2:
+        return {}
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def extract_business_partners(claims: dict[str, Any]) -> list[str]:
+    """Čísla obchodních partnerů z claims tokenu/userinfo (bez duplicit).
+
+    CAS inzeruje claim 'business_partner' (a 'business_partner_shortened');
+    může být řetězec, seznam nebo vnořený pod 'attributes'.
+    """
+    sources = [claims]
+    if isinstance(claims.get("attributes"), dict):
+        sources.append(claims["attributes"])
+    partners: list[str] = []
+    for source in sources:
+        for key in ("business_partner", "business_partner_shortened"):
+            value = source.get(key)
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                if item is None:
+                    continue
+                text = str(item).strip()
+                if text and text not in partners:
+                    partners.append(text)
+    return partners
+
+
+_EAN_RE = re.compile(r"(?<!\d)8591824\d{11}(?!\d)")
+
+
+def find_eans(data: Any) -> list[str]:
+    """Najde v libovolné JSON odpovědi EANy ČEZ Distribuce (8591824 + 11 číslic).
+
+    Používá se na pnd/status, jehož přesnou strukturu neznáme - jen
+    nabízí kandidáty do výběru v config flow.
+    """
+    text = json.dumps(data, ensure_ascii=False) if not isinstance(data, str) else data
+    eans: list[str] = []
+    for ean in _EAN_RE.findall(text):
+        if ean not in eans:
+            eans.append(ean)
+    return eans
+
+
 class CezDistribuceApiClient:
     """Async klient pro ČEZ Distribuce REST API."""
 
@@ -341,9 +465,11 @@ class CezDistribuceApiClient:
         base_url: str = CEZ_DISTRIBUCE_BASE_URL,
         client_id: str = CEZ_DISTRIBUCE_CLIENT_ID,
         portal_environment: tuple[str, str] | None = None,
+        refresh_token: str | None = None,
+        on_refresh_token: Callable[[str], None] | None = None,
     ) -> None:
-        self._username = username
-        self._password = password
+        self._username = username or ""
+        self._password = password or ""
         self._base_url = base_url
         self._client_id = client_id
         self._session = session
@@ -386,6 +512,36 @@ class CezDistribuceApiClient:
         # na neplatný/chybějící token.
         self._mepas_access_token: str | None = None
         self._mepas_installation_id = uuid.uuid4().hex[:16]
+        # Refresh token MEPAS (přihlášení v prohlížeči - Google/Apple...).
+        # U hesla ho držíme jen v paměti, pokud ho CAS vydá; u přihlášení
+        # v prohlížeči je to jediný trvalý přihlašovací údaj a každá jeho
+        # obměna (rotace) se hlásí přes on_refresh_token k uložení.
+        self._mepas_refresh_token: str | None = refresh_token or None
+        self._on_refresh_token = on_refresh_token
+        self._mepas_token_expires_at: float | None = None
+        self._mepas_id_token: str | None = None
+        self._anon_cookies: aiohttp.CookieJar | None = None
+
+    @property
+    def has_portal_login(self) -> bool:
+        """True, když klient umí přihlášení do portálu (má jméno a heslo).
+
+        Bez něj (přihlášení v prohlížeči) jsou dostupná jen data appky Proud
+        (hodinová spotřeba/dodávka) a anonymní odstávky."""
+        return bool(self._username and self._password)
+
+    @property
+    def mepas_refresh_token(self) -> str | None:
+        """Aktuální refresh token MEPAS (po případné rotaci)."""
+        return self._mepas_refresh_token
+
+    @property
+    def mepas_claims(self) -> dict[str, Any]:
+        """Claims z id_tokenu a access tokenu (je-li JWT), id_token má přednost."""
+        return {
+            **decode_jwt_claims(self._mepas_access_token),
+            **decode_jwt_claims(self._mepas_id_token),
+        }
 
     # ------------------------------------------------------------------
     # Přihlášení (portál)
@@ -538,14 +694,19 @@ class CezDistribuceApiClient:
             self._auth_cookies = auth_session.cookie_jar
 
         # Krok 4 – anonymní token (nový session bez přihlášení)
+        await self.login_anonymous()
+
+        _LOGGER.debug("Přihlášení OK, tokeny načteny.")
+
+    async def login_anonymous(self) -> None:
+        """Načte anonymní token portálu (odstávky). Nepotřebuje přihlášení,
+        takže funguje i při přihlášení v prohlížeči."""
         async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as anon_session:
             token_url = f"{self._base_url}/anonymous/rest-auth-api?path=/token/get"
             async with anon_session.get(token_url) as resp:
                 data = await self._read_json_response(resp, token_url)
                 self._anon_api_token = data if isinstance(data, str) else data.get("data") or data.get("token")
             self._anon_cookies = anon_session.cookie_jar
-
-        _LOGGER.debug("Přihlášení OK, tokeny načteny.")
 
     # ------------------------------------------------------------------
     # Landing mezikroky (výběr prostředí, issue #37)
@@ -785,6 +946,11 @@ class CezDistribuceApiClient:
         Ověřeno zachyceným provozem reálné appky (mitmproxy) - nejde o
         odhad z dekompilace, endpoint i pořadí kroků jsou potvrzené.
         """
+        if not self.has_portal_login:
+            raise CezInvalidCredentialsError(
+                "MEPAS: chybí jméno a heslo i platný refresh token - "
+                "je nutné se znovu přihlásit v prohlížeči."
+            )
         _LOGGER.debug("Přihlašuji se do MEPAS (AWS Gateway)...")
 
         verifier, challenge = _make_pkce_pair()
@@ -888,15 +1054,167 @@ class CezDistribuceApiClient:
             ) as resp:
                 data = await self._read_json_response(resp, MEPAS_TOKEN_URL)
 
-        self._mepas_access_token = (
-            data.get("accessToken")
-            or data.get("access_token")
-            or (data.get("data") or {}).get("accessToken")
-        )
-        if not self._mepas_access_token:
-            raise CezAuthError(f"MEPAS token exchange nevrátil accessToken: {data}")
-
+        self._apply_token_response(data)
         _LOGGER.debug("MEPAS přihlášení OK.")
+
+    def _apply_token_response(self, data: Any) -> None:
+        """Uloží tokeny z odpovědi token endpointu (oba tvary klíčů).
+
+        Do chybových hlášek a logu jdou jen názvy klíčů, nikdy hodnoty.
+        """
+        if not isinstance(data, dict):
+            raise CezAuthError("MEPAS token endpoint nevrátil JSON objekt.")
+        body = data.get("data") if isinstance(data.get("data"), dict) else data
+        access = body.get("accessToken") or body.get("access_token")
+        if not access:
+            raise CezAuthError(
+                f"MEPAS token endpoint nevrátil accessToken (klíče: {sorted(body)})."
+            )
+        self._mepas_access_token = access
+        self._mepas_id_token = body.get("idToken") or body.get("id_token") or self._mepas_id_token
+
+        expires_in = body.get("expiresIn") or body.get("expires_in")
+        exp_claim = decode_jwt_claims(access).get("exp")
+        if expires_in:
+            try:
+                self._mepas_token_expires_at = time.time() + float(expires_in)
+            except (TypeError, ValueError):
+                self._mepas_token_expires_at = None
+        elif isinstance(exp_claim, (int, float)):
+            self._mepas_token_expires_at = float(exp_claim)
+        else:
+            self._mepas_token_expires_at = None
+
+        refresh = body.get("refreshToken") or body.get("refresh_token")
+        if refresh and refresh != self._mepas_refresh_token:
+            self._mepas_refresh_token = refresh
+            if self._on_refresh_token is not None:
+                self._on_refresh_token(refresh)
+        _LOGGER.debug(
+            "MEPAS tokeny: refresh=%s, id_token=%s, expires_in=%s",
+            bool(refresh),
+            bool(self._mepas_id_token),
+            expires_in,
+        )
+
+    async def _post_token_request(self, form: dict[str, str]) -> tuple[int, Any, str]:
+        """POST na token endpoint. Vrací (HTTP status, JSON nebo None, text)."""
+        async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as s:
+            async with s.post(
+                MEPAS_TOKEN_URL,
+                data=urllib.parse.urlencode(form),
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+            ) as resp:
+                text = await resp.text()
+                status = resp.status
+        try:
+            data = json.loads(text) if text.strip() else None
+        except json.JSONDecodeError:
+            data = None
+        return status, data, text
+
+    @staticmethod
+    def _token_error(data: Any, text: str) -> str:
+        if isinstance(data, dict):
+            return str(
+                data.get("error_description") or data.get("message") or data.get("error") or ""
+            )[:100]
+        return text[:100]
+
+    @staticmethod
+    def _token_rejected(status: int, data: Any) -> bool:
+        """Odmítnutý kód/refresh token. CAS mepas.cez.cz na neplatný nebo
+        vypršelý kód odpovídá HTTP 500 s message=INVALID_TICKET (ověřeno),
+        ne standardním 400 invalid_grant - bereme obojí."""
+        if status in (400, 401):
+            return True
+        return (
+            status == 500
+            and isinstance(data, dict)
+            and "INVALID_TICKET" in str(data.get("message", ""))
+        )
+
+    async def exchange_mepas_code(self, code: str, code_verifier: str, scope: str) -> None:
+        """Vymění kód z přihlášení v prohlížeči za tokeny (PKCE, bez secretu)."""
+        status, data, text = await self._post_token_request(
+            {
+                "scope": scope,
+                "client_id": MEPAS_CLIENT_ID,
+                "grant_type": "authorization_code",
+                "code": code,
+                "code_verifier": code_verifier,
+                "redirect_uri": MEPAS_LOGIN_REDIRECT_URI,
+            }
+        )
+        if self._token_rejected(status, data):
+            raise CezAuthCodeError(
+                f"Výměna kódu selhala (HTTP {status}, {self._token_error(data, text)})."
+            )
+        if status >= 400 or data is None:
+            raise CezAuthError(f"MEPAS token endpoint vrátil HTTP {status}.")
+        self._apply_token_response(data)
+
+    async def refresh_mepas_token(self) -> None:
+        """Obnoví access token refresh tokenem.
+
+        Odmítnutý refresh token (vypršel, byl zneplatněn odhlášením nebo
+        změnou hesla) = CezInvalidCredentialsError, aby HA nabídl reauth.
+        """
+        if not self._mepas_refresh_token:
+            raise CezInvalidCredentialsError("MEPAS: chybí refresh token.")
+        status, data, text = await self._post_token_request(
+            {
+                "client_id": MEPAS_CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": self._mepas_refresh_token,
+            }
+        )
+        if self._token_rejected(status, data):
+            raise CezInvalidCredentialsError(
+                f"ČEZ odmítl refresh token (HTTP {status}, "
+                f"{self._token_error(data, text)}) - je nutné se znovu přihlásit."
+            )
+        if status >= 400 or data is None:
+            raise CezAuthError(f"MEPAS obnova tokenu: HTTP {status}.")
+        self._apply_token_response(data)
+        _LOGGER.debug("MEPAS access token obnoven refresh tokenem.")
+
+    def _mepas_token_valid(self) -> bool:
+        if not self._mepas_access_token:
+            return False
+        if self._mepas_token_expires_at is None:
+            # Neznámá platnost - spoléháme na 401/403 v _mepas_request.
+            return True
+        return time.time() < self._mepas_token_expires_at - MEPAS_TOKEN_EXPIRY_MARGIN_SECONDS
+
+    async def ensure_mepas_token(self) -> None:
+        """Zajistí platný MEPAS access token (refresh token, jinak heslo)."""
+        if self._mepas_token_valid():
+            return
+        if self._mepas_refresh_token:
+            try:
+                await self.refresh_mepas_token()
+                return
+            except CezInvalidCredentialsError:
+                self._mepas_refresh_token = None
+                if not self.has_portal_login:
+                    raise
+                _LOGGER.debug("Refresh token odmítnut, přihlašuji se heslem.")
+        await self.login_mepas()
+
+    async def get_mepas_userinfo(self) -> dict[str, Any]:
+        """Profil uživatele z CAS (claims), best-effort pro config flow."""
+        await self.ensure_mepas_token()
+        async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as s:
+            async with s.get(
+                MEPAS_USERINFO_URL,
+                headers={"Authorization": f"Bearer {self._mepas_access_token}"},
+            ) as resp:
+                data = await self._read_json_response(resp, MEPAS_USERINFO_URL)
+        return data if isinstance(data, dict) else {}
 
     def _mepas_headers(self, *, is_post: bool = False) -> dict[str, str]:
         headers = {
@@ -928,8 +1246,7 @@ class CezDistribuceApiClient:
         last_body: str = ""
 
         for attempt in range(LOGIN_RETRIES):
-            if not self._mepas_access_token:
-                await self.login_mepas()
+            await self.ensure_mepas_token()
 
             headers = self._mepas_headers(is_post=(method == "POST"))
             async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as s:
@@ -1044,6 +1361,14 @@ class CezDistribuceApiClient:
         json: dict | None = None,
     ) -> Any:
         url = f"{self._base_url}/{path}"
+        if authenticated and not self.has_portal_login:
+            raise CezApiError(
+                "Portálová data nejsou při přihlášení v prohlížeči "
+                "(Google/Apple) dostupná."
+            )
+        if not authenticated and self._anon_cookies is None:
+            await self.login_anonymous()
+        relogin = self.login if authenticated else self.login_anonymous
         for attempt in range(LOGIN_RETRIES):
             _LOGGER.debug(
                 "ČEZ API požadavek: %s endpoint=%s pokus=%d/%d",
@@ -1083,7 +1408,7 @@ class CezDistribuceApiClient:
                 status_code = raw["statusCode"]
                 if status_code == 401:
                     _LOGGER.debug("Token expiroval, obnova... (pokus %d)", attempt + 1)
-                    await self.login()
+                    await relogin()
                     continue
                 elif status_code == 200:
                     return raw.get("data", raw)

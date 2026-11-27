@@ -60,12 +60,14 @@ from .hdo_split import (
     split_hourly_consumption,
 )
 from .pnd_processing import (
+    energy_periods_start,
     fetch_pnd_chunked,
     find_statistic_gaps,
     infer_interval_minutes,
     process_pnd_response,
     reading_baseline,
     reading_registers,
+    summarize_energy_periods,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -150,6 +152,10 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # od kdy součet platí. None dokud statistika neexistuje.
         self.pnd_total_kwh: float | None = None
         self.pnd_first_timestamp: datetime | None = None
+        # Součty hodinových dat za dnes/včera/tento/minulý měsíc a poslední
+        # hodinu (pnd_processing.summarize_energy_periods) - počítá se
+        # z dlouhodobé statistiky po každém importu, čtou je CezPeriodEnergySensor.
+        self.pnd_periods: dict[str, Any] | None = None
 
         # Diagnostika pnd/status (issue #30) - jednou za běh HA zjistíme a
         # zalogujeme, jaké assemblyCode kódy ČEZ pro tohoto partnera/EAN
@@ -232,8 +238,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     return
                 raise UpdateFailed(f"Neočekávaná chyba: {err}") from err
 
+        portal = self._client.has_portal_login
         try:
-            if not self._is_production:
+            # Přihlášení v prohlížeči (Google/Apple) nemá portálovou session -
+            # odečty a HDO signály jsou jen v portálu, takže se nestahují.
+            if not self._is_production and portal:
                 # Historie odečtů (stavVt/stavNt) a HDO spínací signály
                 # dávají smysl jen u odběrného místa běžné spotřeby. U
                 # výroby/mikrozdroje vrací get_readings registry ODBĚRU
@@ -253,7 +262,7 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if all_fresh:
             self.last_successful_update = dt_util.utcnow()
 
-        if not self._is_production:
+        if not self._is_production and portal:
             try:
                 await self._async_update_hdo_history(merged_data.get(DATA_SIGNALS))
             except Exception:  # noqa: BLE001
@@ -268,7 +277,21 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # kdyby MEPAS přihlášení zrovna selhalo). Tahle část je nezávislá
         # na 'all_fresh' výše - last_successful_update sleduje portálová
         # data, last_pnd_timestamp jen čerstvost hodinové spotřeby.
-        if self._partner and self._anlage:
+        # 'anlage' pnd/data nepotřebuje, slouží jen jako znak dokončeného
+        # doplnění metadat z portálu. Bez portálu (přihlášení v prohlížeči)
+        # stačí partner z tokenu.
+        if self._partner and (self._anlage or not portal):
+            if not portal:
+                # Hodinová data jsou tu jediná přihlášená data - odmítnutý
+                # refresh token musí vést na reauth, ne jen na log (chyby
+                # jednotlivých oken pnd/data se níž polykají).
+                try:
+                    await self._client.ensure_mepas_token()
+                except CezInvalidCredentialsError as err:
+                    raise ConfigEntryAuthFailed(str(err)) from err
+                except Exception as err:  # noqa: BLE001
+                    # Síť/výpadek CAS - import níž to zkusí znovu a zaloguje.
+                    _LOGGER.warning("Obnova přihlášení ČEZ (MEPAS) selhala: %s", err)
             try:
                 await self._async_update_pnd_statistics()
             except Exception:  # noqa: BLE001
@@ -276,7 +299,11 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Import hodinové spotřeby (pnd/data) selhal "
                     "(ostatní senzory tím nejsou dotčeny)."
                 )
-            if not self._is_production:
+            try:
+                await self._async_update_energy_periods()
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Výpočet denních/měsíčních součtů hodinových dat selhal.")
+            if not self._is_production and portal:
                 try:
                     await self._async_update_meter_estimate(merged_data.get(DATA_READINGS))
                 except Exception:  # noqa: BLE001
@@ -604,6 +631,34 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         oldest_hour_start = min(hourly_buckets)
         if self.pnd_first_timestamp is None or oldest_hour_start < self.pnd_first_timestamp:
             self.pnd_first_timestamp = oldest_hour_start
+
+    async def _async_update_energy_periods(self) -> None:
+        """Přepočítá self.pnd_periods z hodinové statistiky (od začátku
+        minulého měsíce). Čte z databáze, takže funguje i po restartu HA
+        a v cyklech, kdy ČEZ nic nového nedodal."""
+        statistic_id = self._statistic_id()
+        now_local = dt_util.now()
+        start = energy_periods_start(now_local)
+        rows = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start,
+            now_local.astimezone(timezone.utc),
+            {statistic_id},
+            "hour",
+            None,
+            {"state"},
+        )
+        hours: dict[datetime, float] = {}
+        for row in (rows or {}).get(statistic_id, []):
+            row_start = row.get("start")
+            value = row.get("state")
+            if row_start is None or value is None:
+                continue
+            if not isinstance(row_start, datetime):
+                row_start = datetime.fromtimestamp(float(row_start), tz=timezone.utc)
+            hours[row_start] = float(value)
+        self.pnd_periods = summarize_energy_periods(hours, now_local) if hours else None
 
     async def _async_find_old_statistic_gap(
         self,

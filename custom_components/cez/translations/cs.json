@@ -3,10 +3,34 @@
     "step": {
       "user": {
         "title": "Přihlásit se do ČEZ",
+        "description": "Jak se přihlašujete k ČEZ Distribuce?",
+        "menu_options": {
+          "password": "E-mailem a heslem (všechny funkce)",
+          "browser_login": "Přes Google, Apple nebo v prohlížeči (jen hodinová data a odstávky)"
+        }
+      },
+      "password": {
+        "title": "Přihlásit se do ČEZ",
         "description": "Zadejte přihlašovací údaje k portálu ČEZ Distribuce (dip.cezdistribuce.cz).",
         "data": {
           "username": "Uživatelské jméno (e-mail)",
           "password": "Heslo"
+        }
+      },
+      "browser_login": {
+        "title": "Přihlášení v prohlížeči (Google / Apple)",
+        "description": "1. Otevřete na **počítači** tento odkaz a přihlaste se, jak jste zvyklí (Google, Apple nebo heslo):\n\n[Přihlásit se k ČEZ]({authorize_url})\n\n2. Po přihlášení prohlížeč zkusí otevřít adresu začínající `{redirect_uri}` a zdánlivě se nic nestane. Tuto adresu zkopírujte: ve Firefoxu je v adresním řádku; v Chrome/Edge otevřete před přihlášením Nástroje pro vývojáře (F12) → Síť (zaškrtněte Zachovat protokol), u posledního požadavku `authorize` se stavem 302 zkopírujte hlavičku odpovědi `Location`.\n\n3. Vložte ji sem **co nejdřív** – kód platí jen krátce.\n\nNeotevírejte odkaz na telefonu s nainstalovanou aplikací Proud – ta si kód převezme sama. Integrace neukládá vaše údaje ke Google/Apple, jen přístupový token ČEZ.",
+        "data": {
+          "redirect_url": "Adresa po přihlášení (cda://validation/?code=...)"
+        }
+      },
+      "browser_supply_point": {
+        "title": "Odběrné místo",
+        "description": "Bez přístupu do portálu integrace nezná seznam odběrných míst. Automaticky nalezeno EAN: {ean_count}. EAN (18 číslic) najdete na faktuře nebo v aplikaci Proud. Číslo obchodního partnera bylo předvyplněno z vašeho účtu, pokud ho ČEZ poskytl.\n\nPři tomto způsobu přihlášení nejsou dostupné odečty, HDO a z nich odvozené senzory – jen hodinová spotřeba/dodávka (Energy dashboard) a odstávky.",
+        "data": {
+          "ean": "EAN odběrného místa",
+          "partner": "Číslo obchodního partnera",
+          "om_type": "Typ odběrného místa"
         }
       },
       "select_supply_point": {
@@ -48,7 +72,16 @@
       "portal_action_required": "Portál ČEZ Distribuce po přihlášení vyžaduje akci (potvrzení podmínek, smlouvy nebo výběr prostředí). Přihlaste se jednou na dip.cezdistribuce.cz v prohlížeči a zkuste to znovu.",
       "supply_point_not_found": "Odběrné místo této integrace není pod tímto účtem vidět v žádném prostředí portálu.",
       "portal_unavailable": "Portál ČEZ Distribuce je dočasně nedostupný (místo dat vrací úvodní stránku, typicky při noční údržbě). Zkuste to prosím znovu za chvíli.",
-      "portal_no_data_access": "Přihlášení proběhlo, ale portál ČEZ Distribuce pro tento účet nevrací žádná odběrná místa. Ověřte, že po přihlášení na dip.cezdistribuce.cz v prohlížeči vidíte svá odběrná místa. Samotný účet Můj ČEZ (ČEZ Prodej) nestačí a odběrné místo musí ležet v distribučním území ČEZ Distribuce (ne PREdistribuce ani EG.D)."
+      "portal_no_data_access": "Přihlášení proběhlo, ale portál ČEZ Distribuce pro tento účet nevrací žádná odběrná místa. Ověřte, že po přihlášení na dip.cezdistribuce.cz v prohlížeči vidíte svá odběrná místa. Samotný účet Můj ČEZ (ČEZ Prodej) nestačí a odběrné místo musí ležet v distribučním území ČEZ Distribuce (ne PREdistribuce ani EG.D).",
+      "invalid_redirect_url": "V adrese nebyl nalezen kód. Vložte celou adresu začínající cda://validation/?code=...",
+      "state_mismatch": "Adresa patří k jinému pokusu o přihlášení. Použijte nový odkaz níže a přihlaste se znovu.",
+      "code_expired": "Kód už vypršel nebo byl použit. Přihlaste se znovu přes nový odkaz a adresu vložte rychleji.",
+      "browser_login_failed": "Přihlášení v prohlížeči skončilo chybou. Zkuste to znovu přes nový odkaz.",
+      "scope_retry": "ČEZ odmítl požadovaná oprávnění. Odkaz byl upraven – přihlaste se prosím znovu.",
+      "no_refresh_token": "ČEZ nevydal trvalý přístupový token, takže by integrace přestala po chvíli fungovat. Použijte přihlášení heslem.",
+      "invalid_ean": "EAN musí mít 18 číslic.",
+      "invalid_partner": "Číslo obchodního partnera musí obsahovat jen číslice.",
+      "pnd_check_failed": "ČEZ pro tento EAN a partnera nevrátil hodinová data. Zkontrolujte EAN, číslo partnera a typ (spotřeba/výroba); odběrné místo musí mít chytrý elektroměr."
     },
     "abort": {
       "already_configured": "Toto odběrné místo (EAN) je již nakonfigurováno.",

@@ -21,6 +21,8 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    AUTH_METHOD_BROWSER,
+    CONF_AUTH_METHOD,
     CONF_EAN,
     CONF_HDO_SIGNAL,
     CONF_OM_TYPE,
@@ -38,6 +40,7 @@ from .const import (
     OM_TYPES_PRODUCTION,
 )
 from .coordinator import CezDistribuceCoordinator
+from .pnd_processing import ENERGY_PERIODS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,6 +95,12 @@ async def async_setup_entry(
         CezLastSuccessfulUpdateSensor(coordinator, entry, ean),
         CezConsumptionFreshnessSensor(coordinator, entry, ean, is_production),
     ]
+    # Součty z hodinových dat (chytrý elektroměr) - u odběratelů bez
+    # hodinových dat zůstanou neznámé, stejně jako entita "Hodinová data k".
+    entities.extend(
+        CezPeriodEnergySensor(coordinator, entry, ean, period, is_production)
+        for period in (*ENERGY_PERIODS, "last_hour")
+    )
 
     if is_production:
         # Výroba/mikrozdroj (FVE) - dodávka aktivní energie DO sítě. HDO
@@ -106,6 +115,13 @@ async def async_setup_entry(
         # entit, aby nezůstaly viset jako "nedostupné".
         _remove_stale_production_reading_entities(hass, ean)
         entities.append(CezTotalProductionSensor(coordinator, entry, ean))
+    elif entry.data.get(CONF_AUTH_METHOD) == AUTH_METHOD_BROWSER:
+        # Přihlášení v prohlížeči (Google/Apple) nemá přístup k portálu -
+        # odečty, HDO a z nich odvozené senzory (cena, odhad elektroměru)
+        # by byly trvale nedostupné. Spotřeba jde do dlouhodobé statistiky
+        # "cez:<ean>_consumption" (Energy dashboard); celkový součet z ní
+        # nahrazuje celkový stav z odečtů.
+        entities.append(CezTotalProductionSensor(coordinator, entry, ean, is_production=False))
     else:
         entities.extend(
             [
@@ -652,11 +668,20 @@ class CezTotalProductionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sens
         coordinator: CezDistribuceCoordinator,
         entry: ConfigEntry,
         ean: str,
+        is_production: bool = True,
     ) -> None:
         super().__init__(coordinator)
         self._ean = ean
-        self._attr_unique_id = f"{ean}_total_production"
-        self._attr_name = "Celková dodávka do sítě"
+        self._is_production = is_production
+        if is_production:
+            self._attr_unique_id = f"{ean}_total_production"
+            self._attr_name = "Celková dodávka do sítě"
+        else:
+            # Jen u přihlášení v prohlížeči - jinak má spotřeba celkový
+            # stav z odečtů (CezTotalConsumptionSensor, jiné unique_id).
+            self._attr_unique_id = f"{ean}_total_consumption_hourly"
+            self._attr_name = "Celková spotřeba (hodinová data)"
+            self._attr_icon = "mdi:transmission-tower-export"
         self._attr_device_info = _device_info(entry, ean)
 
     @property
@@ -674,8 +699,92 @@ class CezTotalProductionSensor(CoordinatorEntity[CezDistribuceCoordinator], Sens
         return {
             "od": first.isoformat() if first else None,
             "do": last.isoformat() if last else None,
-            "zdroj": "pnd/data (hodinová dodávka, assemblyCode 06) - součet od 'od'",
+            "zdroj": (
+                "pnd/data (hodinová dodávka, assemblyCode 06) - součet od 'od'"
+                if self._is_production
+                else "pnd/data (hodinová spotřeba, assemblyCode 05) - součet od 'od'"
+            ),
             "statistic_id": self.coordinator.statistic_id,
+        }
+
+
+_PERIOD_NAMES = {
+    False: {
+        "today": "Spotřeba dnes",
+        "yesterday": "Spotřeba včera",
+        "this_month": "Spotřeba tento měsíc",
+        "last_month": "Spotřeba minulý měsíc",
+        "last_hour": "Spotřeba poslední hodina",
+    },
+    True: {
+        "today": "Dodávka dnes",
+        "yesterday": "Dodávka včera",
+        "this_month": "Dodávka tento měsíc",
+        "last_month": "Dodávka minulý měsíc",
+        "last_hour": "Dodávka poslední hodina",
+    },
+}
+
+
+class CezPeriodEnergySensor(CoordinatorEntity[CezDistribuceCoordinator], SensorEntity):
+    """Spotřeba/dodávka za den, měsíc nebo poslední hodinu z hodinových dat.
+
+    Počítá se z dlouhodobé statistiky cez:<ean>_consumption/_production
+    v lokálním čase HA. ČEZ dodává hodinová data se zpožděním (typicky
+    den), proto "dnes" bývá neznámé a "včera" může být do odpoledne
+    neúplné - atributy 'hodin_dat'/'hodin_celkem' ukazují pokrytí.
+
+    Bez state_class záměrně: pro Energy dashboard slouží přímo statistika,
+    tyhle hodnoty by se tam jen zdvojily.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 2
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: CezDistribuceCoordinator,
+        entry: ConfigEntry,
+        ean: str,
+        period: str,
+        is_production: bool,
+    ) -> None:
+        super().__init__(coordinator)
+        self._period = period
+        kind = "production" if is_production else "consumption"
+        self._attr_unique_id = f"{ean}_{kind}_{period}"
+        self._attr_name = _PERIOD_NAMES[is_production][period]
+        self._attr_icon = (
+            "mdi:transmission-tower-import" if is_production else "mdi:lightning-bolt"
+        )
+        self._attr_device_info = _device_info(entry, ean)
+
+    def _data(self) -> dict[str, Any] | None:
+        periods = self.coordinator.pnd_periods
+        return periods.get(self._period) if periods else None
+
+    @property
+    def native_value(self) -> float | None:
+        data = self._data()
+        return data.get("kwh") if data else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        data = self._data()
+        if not data:
+            return {}
+        if self._period == "last_hour":
+            start = data.get("start")
+            return {
+                "zacatek_hodiny": dt_util.as_local(start).isoformat() if start else None,
+            }
+        return {
+            "hodin_dat": data.get("hours"),
+            "hodin_celkem": data.get("expected_hours"),
+            "kompletni": bool(data.get("hours"))
+            and data.get("hours") >= data.get("expected_hours", 0),
         }
 
 

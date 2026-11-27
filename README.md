@@ -43,9 +43,13 @@ Umožňuje sledovat stav HDO, odečty elektroměru, spotřebu, cenu elektřiny, 
 
 ## Nastavení
 
-Integrace vyžaduje přihlašovací údaje k portálu [ČEZ Distribuce](https://dip.cezdistribuce.cz/). Přihlášení prostřednictvím účtu Google nebo Apple zatím není podporováno.
+Po přidání integrace zvolíte způsob přihlášení:
 
-Po přidání integrace zadejte:
+- **E-mailem a heslem** – všechny funkce (odečty, HDO, ceny, hodinová data, odstávky). Postup níže.
+- **Přes Google, Apple nebo v prohlížeči** – pro účty bez hesla k ČEZ. Jen hodinová
+  spotřeba/dodávka a odstávky, viz [Přihlášení přes Google nebo Apple](#přihlášení-přes-google-nebo-apple).
+
+Při přihlášení e-mailem a heslem zadejte:
 
 - **Uživatelské jméno** – e-mail používaný pro přihlášení k portálu ČEZ Distribuce.
 - **Heslo** – heslo k portálu ČEZ Distribuce.
@@ -63,6 +67,43 @@ Při výběru HDO signálu nastavíte také:
 - **Cenu NT (Kč/kWh)**
 
 Ceny můžete kdykoliv změnit přes **Nastavení → Zařízení a služby → ČEZ → Konfigurovat** (ikona ozubeného kola u položky odběrného místa). Po uložení se integrace sama znovu načte. U odběrných míst typu výroba/mikrozdroj tato volba není, protože nemají cenový senzor.
+
+### Přihlášení přes Google nebo Apple
+
+ČEZ umožňuje přihlásit se účtem Google nebo Apple. Home Assistant se ale nemůže
+přihlásit ke Google/Apple sám a ČEZ nedovoluje přesměrovat přihlášení zpět do
+Home Assistantu. Proto se přihlásíte v prohlížeči a výsledek ručně předáte:
+
+1. V průvodci zvolte **Přes Google, Apple nebo v prohlížeči**.
+2. Na **počítači** otevřete zobrazený odkaz a přihlaste se, jak jste zvyklí.
+3. Prohlížeč pak zkusí otevřít adresu `cda://validation/?code=...` (adresu
+   aplikace Proud) a zdánlivě se nic nestane. Tuto adresu zkopírujte:
+   - **Firefox:** je v adresním řádku.
+   - **Chrome/Edge:** před přihlášením otevřete Nástroje pro vývojáře (F12) →
+     Síť a zaškrtněte *Zachovat protokol*. Po přihlášení u posledního požadavku
+     `authorize` se stavem 302 zkopírujte hlavičku odpovědi `Location`.
+4. Adresu vložte do průvodce **co nejdřív** – kód platí jen krátce. Když
+   vyprší, průvodce vytvoří nový odkaz a stačí se přihlásit znovu (ČEZ si
+   přihlášení v prohlížeči pamatuje, takže to bývá na jedno kliknutí).
+5. Zadejte EAN, číslo obchodního partnera (předvyplní se z účtu, pokud ho ČEZ
+   poskytne) a typ odběrného místa (spotřeba / výroba). Průvodce ověří, že pro
+   ně ČEZ vrací hodinová data.
+
+Odkaz neotevírejte na telefonu s nainstalovanou aplikací Proud – ta si kód
+převezme sama a do Home Assistantu ho nedostanete.
+
+Integrace neukládá údaje ke Google/Apple, jen přístupový (refresh) token ČEZ.
+Když ho ČEZ odmítne (vyprší, odhlásíte se ze všech zařízení…), Home Assistant
+nabídne **opětovné přihlášení** stejným postupem. Každé odběrné místo se
+přihlašuje samostatně.
+
+Omezení: bez přihlášení do portálu nejsou dostupné **odečty, HDO, cena
+a odhad stavu elektroměru**. K dispozici je hodinová spotřeba nebo dodávka
+v dlouhodobých statistikách (Energy dashboard, viz [Hodinová spotřeba](#hodinová-spotřeba)),
+u výroby senzor celkové dodávky, odstávky a diagnostické senzory. Pokud
+chcete všechny funkce a ČEZ vám u účtu umožní nastavit heslo (např. přes
+*Zapomenuté heslo* na přihlašovací stránce), použijte přihlášení e-mailem
+a heslem.
 
 ### Více odběrných míst
 
@@ -122,6 +163,19 @@ v Home Assistantu čtyři položky integrace se stejnými přihlašovacími úda
 | `sensor.odpocet_do_konce_nizkeho_tarifu` | Senzor (min) | Počet minut do konce aktuálního nebo nejbližšího období NT; ve výchozím stavu je skrytý |
 | `binary_sensor.porucha_odstavka` | Binární senzor | Hlášená porucha nebo plánovaná odstávka |
 | `sensor.hodinova_data_spotreby_k` | Diagnostický senzor | Konec poslední hodiny spotřeby importované do dlouhodobých statistik |
+| `sensor.spotreba_dnes`, `sensor.spotreba_vcera` | Senzor (kWh) | Spotřeba za den z hodinových dat (lokální čas HA) |
+| `sensor.spotreba_tento_mesic`, `sensor.spotreba_minuly_mesic` | Senzor (kWh) | Spotřeba za kalendářní měsíc z hodinových dat |
+| `sensor.spotreba_posledni_hodina` | Senzor (kWh) | Spotřeba nejnovější hodiny, kterou ČEZ dodal; začátek hodiny je v atributu `zacatek_hodiny` |
+
+Denní a měsíční součty se počítají z hodinových dat (jen chytré elektroměry).
+ČEZ je dodává se zpožděním, typicky den, takže **dnes** bývá neznámé
+a **včera** může být do odpoledne neúplné – pokrytí ukazují atributy
+`hodin_dat`, `hodin_celkem` a `kompletni`. Do Energy dashboardu přidávejte
+dlouhodobou statistiku `cez:<ean>_consumption`, ne tyto senzory.
+
+Při [přihlášení přes Google nebo Apple](#přihlášení-přes-google-nebo-apple)
+se místo senzorů z odečtů a HDO vytvoří `sensor.celkova_spotreba_hodinova_data`
+(součet hodinových dat od nejstarší dohledané hodiny) a součty výše.
 
 ### Výroba a mikrozdroj
 
@@ -129,7 +183,9 @@ Pokud přidáte odběrné místo typu **Výroba**, **Mikrozdroj** nebo **Výrobn
 
 - nevytvoří se HDO a tarifové senzory ani `sensor.spotreba_vt` a `sensor.spotreba_nt`, protože se netýkají dodávky do sítě;
 - místo `sensor.celkova_spotreba` se vytvoří `sensor.celkova_dodavka_do_site`;
-- vytvoří se diagnostická entita `sensor.hodinova_data_dodavky_k`.
+- vytvoří se diagnostická entita `sensor.hodinova_data_dodavky_k`;
+- součty z hodinových dat se jmenují `sensor.dodavka_dnes`, `sensor.dodavka_vcera`,
+  `sensor.dodavka_tento_mesic`, `sensor.dodavka_minuly_mesic` a `sensor.dodavka_posledni_hodina`.
 
 Podrobnosti o výpočtu dodávky do sítě najdete v části [Celková dodávka do sítě](#celková-dodávka-do-sítě).
 
