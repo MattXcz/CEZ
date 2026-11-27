@@ -60,12 +60,14 @@ from .hdo_split import (
     split_hourly_consumption,
 )
 from .pnd_processing import (
+    energy_periods_start,
     fetch_pnd_chunked,
     find_statistic_gaps,
     infer_interval_minutes,
     process_pnd_response,
     reading_baseline,
     reading_registers,
+    summarize_energy_periods,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -150,6 +152,10 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # od kdy součet platí. None dokud statistika neexistuje.
         self.pnd_total_kwh: float | None = None
         self.pnd_first_timestamp: datetime | None = None
+        # Součty hodinových dat za dnes/včera/tento/minulý měsíc a poslední
+        # hodinu (pnd_processing.summarize_energy_periods) - počítá se
+        # z dlouhodobé statistiky po každém importu, čtou je CezPeriodEnergySensor.
+        self.pnd_periods: dict[str, Any] | None = None
 
         # Diagnostika pnd/status (issue #30) - jednou za běh HA zjistíme a
         # zalogujeme, jaké assemblyCode kódy ČEZ pro tohoto partnera/EAN
@@ -293,6 +299,10 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Import hodinové spotřeby (pnd/data) selhal "
                     "(ostatní senzory tím nejsou dotčeny)."
                 )
+            try:
+                await self._async_update_energy_periods()
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Výpočet denních/měsíčních součtů hodinových dat selhal.")
             if not self._is_production and portal:
                 try:
                     await self._async_update_meter_estimate(merged_data.get(DATA_READINGS))
@@ -621,6 +631,34 @@ class CezDistribuceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         oldest_hour_start = min(hourly_buckets)
         if self.pnd_first_timestamp is None or oldest_hour_start < self.pnd_first_timestamp:
             self.pnd_first_timestamp = oldest_hour_start
+
+    async def _async_update_energy_periods(self) -> None:
+        """Přepočítá self.pnd_periods z hodinové statistiky (od začátku
+        minulého měsíce). Čte z databáze, takže funguje i po restartu HA
+        a v cyklech, kdy ČEZ nic nového nedodal."""
+        statistic_id = self._statistic_id()
+        now_local = dt_util.now()
+        start = energy_periods_start(now_local)
+        rows = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            start,
+            now_local.astimezone(timezone.utc),
+            {statistic_id},
+            "hour",
+            None,
+            {"state"},
+        )
+        hours: dict[datetime, float] = {}
+        for row in (rows or {}).get(statistic_id, []):
+            row_start = row.get("start")
+            value = row.get("state")
+            if row_start is None or value is None:
+                continue
+            if not isinstance(row_start, datetime):
+                row_start = datetime.fromtimestamp(float(row_start), tz=timezone.utc)
+            hours[row_start] = float(value)
+        self.pnd_periods = summarize_energy_periods(hours, now_local) if hours else None
 
     async def _async_find_old_statistic_gap(
         self,

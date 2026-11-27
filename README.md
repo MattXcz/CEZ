@@ -163,6 +163,19 @@ v Home Assistantu čtyři položky integrace se stejnými přihlašovacími úda
 | `sensor.odpocet_do_konce_nizkeho_tarifu` | Senzor (min) | Počet minut do konce aktuálního nebo nejbližšího období NT; ve výchozím stavu je skrytý |
 | `binary_sensor.porucha_odstavka` | Binární senzor | Hlášená porucha nebo plánovaná odstávka |
 | `sensor.hodinova_data_spotreby_k` | Diagnostický senzor | Konec poslední hodiny spotřeby importované do dlouhodobých statistik |
+| `sensor.spotreba_dnes`, `sensor.spotreba_vcera` | Senzor (kWh) | Spotřeba za den z hodinových dat (lokální čas HA) |
+| `sensor.spotreba_tento_mesic`, `sensor.spotreba_minuly_mesic` | Senzor (kWh) | Spotřeba za kalendářní měsíc z hodinových dat |
+| `sensor.spotreba_posledni_hodina` | Senzor (kWh) | Spotřeba nejnovější hodiny, kterou ČEZ dodal; začátek hodiny je v atributu `zacatek_hodiny` |
+
+Denní a měsíční součty se počítají z hodinových dat (jen chytré elektroměry).
+ČEZ je dodává se zpožděním, typicky den, takže **dnes** bývá neznámé
+a **včera** může být do odpoledne neúplné – pokrytí ukazují atributy
+`hodin_dat`, `hodin_celkem` a `kompletni`. Do Energy dashboardu přidávejte
+dlouhodobou statistiku `cez:<ean>_consumption`, ne tyto senzory.
+
+Při [přihlášení přes Google nebo Apple](#přihlášení-přes-google-nebo-apple)
+se místo senzorů z odečtů a HDO vytvoří `sensor.celkova_spotreba_hodinova_data`
+(součet hodinových dat od nejstarší dohledané hodiny) a součty výše.
 
 ### Výroba a mikrozdroj
 
@@ -170,7 +183,9 @@ Pokud přidáte odběrné místo typu **Výroba**, **Mikrozdroj** nebo **Výrobn
 
 - nevytvoří se HDO a tarifové senzory ani `sensor.spotreba_vt` a `sensor.spotreba_nt`, protože se netýkají dodávky do sítě;
 - místo `sensor.celkova_spotreba` se vytvoří `sensor.celkova_dodavka_do_site`;
-- vytvoří se diagnostická entita `sensor.hodinova_data_dodavky_k`.
+- vytvoří se diagnostická entita `sensor.hodinova_data_dodavky_k`;
+- součty z hodinových dat se jmenují `sensor.dodavka_dnes`, `sensor.dodavka_vcera`,
+  `sensor.dodavka_tento_mesic`, `sensor.dodavka_minuly_mesic` a `sensor.dodavka_posledni_hodina`.
 
 Podrobnosti o výpočtu dodávky do sítě najdete v části [Celková dodávka do sítě](#celková-dodávka-do-sítě).
 

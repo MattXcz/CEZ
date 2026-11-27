@@ -245,6 +245,87 @@ async def fetch_pnd_chunked(
     return results, unit
 
 
+ENERGY_PERIODS = ("today", "yesterday", "this_month", "last_month")
+
+
+def energy_periods_start(now_local: datetime) -> datetime:
+    """Nejstarší okamžik (UTC), který summarize_energy_periods potřebuje -
+    lokální půlnoc prvního dne minulého měsíce."""
+    month_start = now_local.date().replace(day=1)
+    last_month_start = (month_start - timedelta(days=1)).replace(day=1)
+    return _local_midnight_utc(last_month_start, now_local.tzinfo)
+
+
+def _local_midnight_utc(day: Any, tz: Any) -> datetime:
+    return datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(timezone.utc)
+
+
+def summarize_energy_periods(
+    hours: dict[datetime, float], now_local: datetime
+) -> dict[str, Any]:
+    """Součty hodinové energie za kalendářní období v LOKÁLNÍM čase HA.
+
+    'hours' = {začátek hodiny (aware): kWh}, 'now_local' = aware čas v časové
+    zóně HA (dt_util.now()). Vrací pro každé období z ENERGY_PERIODS slovník
+    {kwh, hours, expected_hours} - kwh je None, když za období nejsou žádná
+    data (ČEZ dodává data se zpožděním, typicky den; 0 by klamala).
+    'expected_hours' počítá s přechodem letní/zimní čas (23/25 h) a u
+    běžícího období jen do aktuální hodiny. Navíc 'last_hour' = {kwh, start}
+    pro nejnovější hodinu s daty.
+    """
+    tz = now_local.tzinfo
+    today = now_local.date()
+    yesterday = today - timedelta(days=1)
+    month_start = today.replace(day=1)
+    last_month_start = (month_start - timedelta(days=1)).replace(day=1)
+    now_utc = now_local.astimezone(timezone.utc)
+
+    bounds = {
+        "today": (today, today + timedelta(days=1)),
+        "yesterday": (yesterday, today),
+        "this_month": (month_start, (month_start + timedelta(days=32)).replace(day=1)),
+        "last_month": (last_month_start, month_start),
+    }
+    result: dict[str, Any] = {}
+    for key, (first_day, end_day) in bounds.items():
+        start_utc = _local_midnight_utc(first_day, tz)
+        end_utc = min(_local_midnight_utc(end_day, tz), now_utc)
+        result[key] = {
+            "kwh": 0.0,
+            "hours": 0,
+            "expected_hours": max(0, int((end_utc - start_utc).total_seconds() // 3600)),
+            "_range": (start_utc, _local_midnight_utc(end_day, tz)),
+        }
+
+    newest: datetime | None = None
+    for start, kwh in hours.items():
+        start_utc = start.astimezone(timezone.utc)
+        for period in result.values():
+            lo, hi = period["_range"]
+            if lo <= start_utc < hi:
+                period["kwh"] += kwh
+                period["hours"] += 1
+        if newest is None or start_utc > newest:
+            newest = start_utc
+
+    for period in result.values():
+        del period["_range"]
+        period["kwh"] = round(period["kwh"], 3) if period["hours"] else None
+    result["last_hour"] = {
+        "kwh": round(hours_utc_value(hours, newest), 3) if newest else None,
+        "start": newest,
+    }
+    return result
+
+
+def hours_utc_value(hours: dict[datetime, float], start_utc: datetime) -> float:
+    """Hodnota hodiny podle UTC začátku (klíče mohou být v libovolné zóně)."""
+    for start, kwh in hours.items():
+        if start.astimezone(timezone.utc) == start_utc:
+            return kwh
+    return 0.0
+
+
 def _fmt(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
